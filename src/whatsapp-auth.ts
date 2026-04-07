@@ -154,7 +154,6 @@ async function connectSocket(
     }
 
     if (connection === 'open') {
-      fs.writeFileSync(STATUS_FILE, 'authenticated');
       // Clean up QR file now that we're connected
       try {
         fs.unlinkSync(QR_FILE);
@@ -163,8 +162,25 @@ async function connectSocket(
       console.log('  Credentials saved to store/auth/');
       console.log('  You can now start the NanoClaw service.\n');
 
-      // Give it a moment to save credentials, then exit
-      setTimeout(() => process.exit(0), 1000);
+      // Wait for registration to complete before exiting
+      const waitForRegistration = async () => {
+        for (let i = 0; i < 15; i++) {
+          try {
+            const creds = JSON.parse(
+              fs.readFileSync(path.join(AUTH_DIR, 'creds.json'), 'utf-8'),
+            );
+            if (creds.registered) {
+              fs.writeFileSync(STATUS_FILE, 'authenticated');
+              process.exit(0);
+            }
+          } catch {}
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+        // Fallback: mark as authenticated even if registered flag isn't set
+        fs.writeFileSync(STATUS_FILE, 'authenticated');
+        process.exit(0);
+      };
+      waitForRegistration();
     }
   });
 

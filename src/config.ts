@@ -8,9 +8,15 @@ import { isValidTimezone } from './timezone.js';
 const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
+  'CREDENTIAL_PROXY_HOST',
   'ONECLI_URL',
   'TZ',
 ]);
+
+// Propagate to process.env so modules that read process.env directly (e.g. container-runtime.ts) can find it
+if (envConfig.CREDENTIAL_PROXY_HOST && !process.env.CREDENTIAL_PROXY_HOST) {
+  process.env.CREDENTIAL_PROXY_HOST = envConfig.CREDENTIAL_PROXY_HOST;
+}
 
 export const ASSISTANT_NAME =
   process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
