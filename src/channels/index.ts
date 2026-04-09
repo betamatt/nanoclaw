@@ -2,7 +2,7 @@
 // Each import triggers the channel module's registerChannelAdapter() call.
 
 // discord
-// import './discord.js';
+import './discord.js';
 
 // slack
 // import './slack.js';
