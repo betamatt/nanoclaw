@@ -3,6 +3,7 @@ import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
 
+import { handleCalendarRequest } from './calendar.js';
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
@@ -144,6 +145,40 @@ export function startIpcWatcher(deps: IpcDeps): void {
         }
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+      }
+
+      // Process calendar requests (main group only)
+      const calendarDir = path.join(ipcBaseDir, sourceGroup, 'calendar');
+      if (isMain) {
+        try {
+          if (fs.existsSync(calendarDir)) {
+            const calFiles = fs
+              .readdirSync(calendarDir)
+              .filter((f) => f.endsWith('.json') && !f.endsWith('.response.json'));
+            for (const file of calFiles) {
+              const filePath = path.join(calendarDir, file);
+              try {
+                const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+                const result = handleCalendarRequest(data);
+                const responsePath = filePath.replace('.json', '.response.json');
+                fs.writeFileSync(responsePath, JSON.stringify(result));
+                fs.unlinkSync(filePath);
+                logger.info(
+                  { action: data.action, sourceGroup },
+                  'Calendar IPC processed',
+                );
+              } catch (err) {
+                logger.error(
+                  { file, sourceGroup, err },
+                  'Error processing calendar IPC',
+                );
+                try { fs.unlinkSync(filePath); } catch {}
+              }
+            }
+          }
+        } catch (err) {
+          logger.error({ err, sourceGroup }, 'Error reading calendar IPC directory');
+        }
       }
     }
 

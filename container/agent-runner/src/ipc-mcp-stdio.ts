@@ -503,6 +503,103 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+// --- Apple Calendar tools (main group only) ---
+
+const CALENDAR_DIR = path.join(IPC_DIR, 'calendar');
+
+async function calendarRequest(action: string, params: Record<string, any>): Promise<string> {
+  if (!isMain) return 'Calendar is only available in the main group.';
+
+  fs.mkdirSync(CALENDAR_DIR, { recursive: true });
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const requestFile = path.join(CALENDAR_DIR, `${requestId}.json`);
+  const responseFile = path.join(CALENDAR_DIR, `${requestId}.response.json`);
+
+  fs.writeFileSync(requestFile, JSON.stringify({ action, requestId, params }));
+
+  // Poll for response (host processes within ~1s IPC cycle)
+  for (let i = 0; i < 20; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    if (fs.existsSync(responseFile)) {
+      const result = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+      fs.unlinkSync(responseFile);
+      if (result.success) return JSON.stringify(result.data, null, 2);
+      return `Error: ${result.error}`;
+    }
+  }
+  return 'Timeout waiting for calendar response.';
+}
+
+server.tool(
+  'calendar_list',
+  'List all available Apple Calendar calendars.',
+  {},
+  async () => ({
+    content: [{ type: 'text' as const, text: await calendarRequest('list_calendars', {}) }],
+  }),
+);
+
+server.tool(
+  'calendar_events',
+  'Get events from Apple Calendar within a date range. Dates are ISO format (e.g. "2026-04-07T00:00:00", "2026-04-08T00:00:00").',
+  {
+    startDate: z.string().describe('Start of range (ISO date string)'),
+    endDate: z.string().describe('End of range (ISO date string)'),
+    calendar: z.string().optional().describe('Calendar name to filter by (omit for all calendars)'),
+  },
+  async (args) => ({
+    content: [{ type: 'text' as const, text: await calendarRequest('get_events', args) }],
+  }),
+);
+
+server.tool(
+  'calendar_create',
+  'Create a new event in Apple Calendar.',
+  {
+    title: z.string().describe('Event title'),
+    startDate: z.string().describe('Start time (ISO date string)'),
+    endDate: z.string().describe('End time (ISO date string)'),
+    calendar: z.string().optional().describe('Calendar name (uses default if omitted)'),
+    location: z.string().optional().describe('Event location'),
+    notes: z.string().optional().describe('Event notes/description'),
+    isAllDay: z.boolean().optional().describe('Whether this is an all-day event'),
+  },
+  async (args) => ({
+    content: [{ type: 'text' as const, text: await calendarRequest('create_event', args) }],
+  }),
+);
+
+server.tool(
+  'calendar_update',
+  'Update an existing calendar event by its ID.',
+  {
+    eventId: z.string().describe('The event UID to update'),
+    updates: z.object({
+      title: z.string().optional(),
+      startDate: z.string().optional(),
+      endDate: z.string().optional(),
+      location: z.string().optional(),
+      notes: z.string().optional(),
+    }).describe('Fields to update'),
+    calendar: z.string().optional().describe('Calendar name to search in'),
+  },
+  async (args) => ({
+    content: [{ type: 'text' as const, text: await calendarRequest('update_event', args) }],
+  }),
+);
+
+server.tool(
+  'calendar_delete',
+  'Delete a calendar event by its ID.',
+  {
+    eventId: z.string().describe('The event UID to delete'),
+    calendar: z.string().optional().describe('Calendar name to search in'),
+  },
+  async (args) => ({
+    content: [{ type: 'text' as const, text: await calendarRequest('delete_event', args) }],
+  }),
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
