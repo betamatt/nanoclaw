@@ -61,6 +61,7 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
+import { SDLC_ENABLED } from './sdlc/config.js';
 import { startSessionCleanup } from './session-cleanup.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
@@ -582,9 +583,12 @@ async function main(): Promise<void> {
 
   restoreRemoteControl();
 
+  let sdlcCleanup: (() => void) | null = null;
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    sdlcCleanup?.();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
@@ -712,6 +716,35 @@ async function main(): Promise<void> {
       if (text) await channel.sendMessage(jid, text);
     },
   });
+  // Start SDLC pipeline (opt-in via SDLC_ENABLED=true)
+  let sdlcPipeline: Awaited<
+    ReturnType<typeof import('./sdlc/pipeline.js').startSdlcSystem>
+  > | null = null;
+  if (SDLC_ENABLED) {
+    const { startSdlcSystem, stopSdlcSystem } = await import('./sdlc/pipeline.js');
+    sdlcCleanup = stopSdlcSystem;
+    const mainJid = Object.entries(registeredGroups).find(
+      ([, g]) => g.isMain,
+    )?.[0];
+    sdlcPipeline = startSdlcSystem({
+      queue,
+      registeredGroups: () => registeredGroups,
+      registerGroup,
+      getSessions: () => sessions,
+      setSession: (folder, sessionId) => {
+        sessions[folder] = sessionId;
+        setSession(folder, sessionId);
+      },
+      onProcess: (jid, proc, containerName, folder) =>
+        queue.registerProcess(jid, proc, containerName, folder),
+      sendNotification: async (text) => {
+        if (!mainJid) return;
+        const ch = findChannel(channels, mainJid);
+        if (ch) await ch.sendMessage(mainJid, text);
+      },
+    });
+  }
+
   startIpcWatcher({
     sendMessage: (jid, text) => {
       const channel = findChannel(channels, jid);
@@ -746,6 +779,13 @@ async function main(): Promise<void> {
         writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
       }
     },
+    onSdlcResult: sdlcPipeline
+      ? (_sourceGroup, data) => {
+          sdlcPipeline!.handleStageResult(data).catch((err) =>
+            logger.error({ err, data }, 'Error handling SDLC result'),
+          );
+        }
+      : undefined,
   });
   startSessionCleanup();
   queue.setProcessMessagesFn(processGroupMessages);

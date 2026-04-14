@@ -5,6 +5,7 @@ import path from 'path';
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { initSdlcSchema } from './sdlc/db.js';
 import {
   NewMessage,
   RegisteredGroup,
@@ -157,6 +158,9 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* columns already exist */
   }
+
+  // SDLC pipeline schema
+  initSdlcSchema(database);
 }
 
 export function initDatabase(): void {

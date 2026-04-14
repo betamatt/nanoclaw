@@ -9,6 +9,7 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import type { SdlcStageResult } from './sdlc/types.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -24,6 +25,7 @@ export interface IpcDeps {
     registeredJids: Set<string>,
   ) => void;
   onTasksChanged: () => void;
+  onSdlcResult?: (sourceGroup: string, data: SdlcStageResult) => void;
 }
 
 let ipcWatcherRunning = false;
@@ -145,6 +147,41 @@ export function startIpcWatcher(deps: IpcDeps): void {
         }
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
+      }
+
+      // Process SDLC stage results
+      const sdlcDir = path.join(ipcBaseDir, sourceGroup, 'sdlc');
+      if (deps.onSdlcResult) {
+        try {
+          if (fs.existsSync(sdlcDir)) {
+            const sdlcFiles = fs
+              .readdirSync(sdlcDir)
+              .filter((f) => f.startsWith('result-') && f.endsWith('.json'));
+            for (const file of sdlcFiles) {
+              const filePath = path.join(sdlcDir, file);
+              try {
+                const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+                if (data.type === 'sdlc_stage_result') {
+                  deps.onSdlcResult(sourceGroup, data as SdlcStageResult);
+                }
+                fs.unlinkSync(filePath);
+              } catch (err) {
+                logger.error(
+                  { file, sourceGroup, err },
+                  'Error processing SDLC result',
+                );
+                const errorDir = path.join(ipcBaseDir, 'errors');
+                fs.mkdirSync(errorDir, { recursive: true });
+                fs.renameSync(
+                  filePath,
+                  path.join(errorDir, `${sourceGroup}-${file}`),
+                );
+              }
+            }
+          }
+        } catch (err) {
+          logger.error({ err, sourceGroup }, 'Error reading SDLC IPC directory');
+        }
       }
 
       // Process calendar requests (main group only)
