@@ -421,10 +421,7 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
 - If CI is failing, validation should fail`;
 }
 
-export function getPromptForStage(
-  stage: string,
-  issue: SdlcIssue,
-): string {
+export function getPromptForStage(stage: string, issue: SdlcIssue): string {
   switch (stage) {
     case 'triage':
       return triagePrompt(issue);

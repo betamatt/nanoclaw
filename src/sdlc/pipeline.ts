@@ -20,7 +20,12 @@ import {
   switchWorktreeToBranch,
 } from './repo-manager.js';
 import { startFunnel, stopFunnel } from './tailscale-funnel.js';
-import type { SdlcIssue, SdlcPipelineDeps, SdlcStage, SdlcStageResult } from './types.js';
+import type {
+  SdlcIssue,
+  SdlcPipelineDeps,
+  SdlcStage,
+  SdlcStageResult,
+} from './types.js';
 import { startWebhookServer } from './webhook-server.js';
 import { ensureWebhooks, setWebhookUrl } from './webhook-setup.js';
 
@@ -133,7 +138,10 @@ export class SdlcPipeline {
       return;
     }
 
-    logger.info({ repo, issueNumber }, 'Plan approved, starting implementation');
+    logger.info(
+      { repo, issueNumber },
+      'Plan approved, starting implementation',
+    );
     await this.deps.sendNotification(
       `SDLC: Plan approved for #${issueNumber} in ${repo} — starting implementation`,
     );

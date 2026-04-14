@@ -180,7 +180,10 @@ export function startIpcWatcher(deps: IpcDeps): void {
             }
           }
         } catch (err) {
-          logger.error({ err, sourceGroup }, 'Error reading SDLC IPC directory');
+          logger.error(
+            { err, sourceGroup },
+            'Error reading SDLC IPC directory',
+          );
         }
       }
 
@@ -191,13 +194,18 @@ export function startIpcWatcher(deps: IpcDeps): void {
           if (fs.existsSync(calendarDir)) {
             const calFiles = fs
               .readdirSync(calendarDir)
-              .filter((f) => f.endsWith('.json') && !f.endsWith('.response.json'));
+              .filter(
+                (f) => f.endsWith('.json') && !f.endsWith('.response.json'),
+              );
             for (const file of calFiles) {
               const filePath = path.join(calendarDir, file);
               try {
                 const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
                 const result = handleCalendarRequest(data);
-                const responsePath = filePath.replace('.json', '.response.json');
+                const responsePath = filePath.replace(
+                  '.json',
+                  '.response.json',
+                );
                 fs.writeFileSync(responsePath, JSON.stringify(result));
                 fs.unlinkSync(filePath);
                 logger.info(
@@ -209,12 +217,17 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   { file, sourceGroup, err },
                   'Error processing calendar IPC',
                 );
-                try { fs.unlinkSync(filePath); } catch {}
+                try {
+                  fs.unlinkSync(filePath);
+                } catch {}
               }
             }
           }
         } catch (err) {
-          logger.error({ err, sourceGroup }, 'Error reading calendar IPC directory');
+          logger.error(
+            { err, sourceGroup },
+            'Error reading calendar IPC directory',
+          );
         }
       }
     }

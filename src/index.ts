@@ -721,7 +721,8 @@ async function main(): Promise<void> {
     ReturnType<typeof import('./sdlc/pipeline.js').startSdlcSystem>
   > | null = null;
   if (SDLC_ENABLED) {
-    const { startSdlcSystem, stopSdlcSystem } = await import('./sdlc/pipeline.js');
+    const { startSdlcSystem, stopSdlcSystem } =
+      await import('./sdlc/pipeline.js');
     sdlcCleanup = stopSdlcSystem;
     const mainJid = Object.entries(registeredGroups).find(
       ([, g]) => g.isMain,
@@ -781,9 +782,11 @@ async function main(): Promise<void> {
     },
     onSdlcResult: sdlcPipeline
       ? (_sourceGroup, data) => {
-          sdlcPipeline!.handleStageResult(data).catch((err) =>
-            logger.error({ err, data }, 'Error handling SDLC result'),
-          );
+          sdlcPipeline!
+            .handleStageResult(data)
+            .catch((err) =>
+              logger.error({ err, data }, 'Error handling SDLC result'),
+            );
         }
       : undefined,
   });

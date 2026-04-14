@@ -2,7 +2,11 @@ import { execSync } from 'child_process';
 
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
-import { GITHUB_WEBHOOK_SECRET, SDLC_REPOS, SDLC_WEBHOOK_URL } from './config.js';
+import {
+  GITHUB_WEBHOOK_SECRET,
+  SDLC_REPOS,
+  SDLC_WEBHOOK_URL,
+} from './config.js';
 
 // Allow runtime override (e.g., from Tailscale Funnel)
 let runtimeWebhookUrl: string | null = null;
@@ -141,19 +145,51 @@ function ensureWebhookForRepo(
 
 const SDLC_LABELS = [
   // Classification labels
-  { name: 'bug', color: 'd73a4a', description: 'Something isn\'t working' },
+  { name: 'bug', color: 'd73a4a', description: "Something isn't working" },
   { name: 'feature', color: 'a2eeef', description: 'New feature or request' },
-  { name: 'chore', color: 'e4e669', description: 'Maintenance or housekeeping' },
+  {
+    name: 'chore',
+    color: 'e4e669',
+    description: 'Maintenance or housekeeping',
+  },
   { name: 'security', color: 'b60205', description: 'Security-related issue' },
   // Complexity labels
-  { name: 'complexity:small', color: 'c5def5', description: 'Small scope — straightforward, isolated change' },
-  { name: 'complexity:med', color: 'bfd4f2', description: 'Medium scope — multiple files, moderate effort' },
-  { name: 'complexity:large', color: '0075ca', description: 'Large scope — significant effort, architectural changes' },
+  {
+    name: 'complexity:small',
+    color: 'c5def5',
+    description: 'Small scope — straightforward, isolated change',
+  },
+  {
+    name: 'complexity:med',
+    color: 'bfd4f2',
+    description: 'Medium scope — multiple files, moderate effort',
+  },
+  {
+    name: 'complexity:large',
+    color: '0075ca',
+    description: 'Large scope — significant effort, architectural changes',
+  },
   // Pipeline status labels
-  { name: 'sdlc:plan-ready', color: '0e8a16', description: 'SDLC: Implementation plan is ready for review' },
-  { name: 'sdlc:approve-plan', color: '006b75', description: 'SDLC: Plan approved — proceed to implementation' },
-  { name: 'sdlc:validated', color: '2ea44f', description: 'SDLC: PR validated against requirements' },
-  { name: 'sdlc:failed', color: 'b60205', description: 'SDLC: Pipeline stage failed' },
+  {
+    name: 'sdlc:plan-ready',
+    color: '0e8a16',
+    description: 'SDLC: Implementation plan is ready for review',
+  },
+  {
+    name: 'sdlc:approve-plan',
+    color: '006b75',
+    description: 'SDLC: Plan approved — proceed to implementation',
+  },
+  {
+    name: 'sdlc:validated',
+    color: '2ea44f',
+    description: 'SDLC: PR validated against requirements',
+  },
+  {
+    name: 'sdlc:failed',
+    color: 'b60205',
+    description: 'SDLC: Pipeline stage failed',
+  },
 ];
 
 function ensureLabelsForRepo(repo: string, token: string): void {
@@ -163,17 +199,20 @@ function ensureLabelsForRepo(repo: string, token: string): void {
   let existing: Array<{ name: string }>;
   try {
     existing = JSON.parse(
-      execSync(
-        `gh api repos/${repo}/labels --paginate --jq '[.[].name]'`,
-        { encoding: 'utf-8', env, stdio: ['pipe', 'pipe', 'pipe'] },
-      ),
+      execSync(`gh api repos/${repo}/labels --paginate --jq '[.[].name]'`, {
+        encoding: 'utf-8',
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }),
     );
   } catch {
     existing = [];
   }
 
   const existingSet = new Set(
-    Array.isArray(existing) ? existing.map((n) => (typeof n === 'string' ? n : '')) : [],
+    Array.isArray(existing)
+      ? existing.map((n) => (typeof n === 'string' ? n : ''))
+      : [],
   );
 
   for (const label of SDLC_LABELS) {

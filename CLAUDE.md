@@ -44,6 +44,10 @@ Four types of skills exist in NanoClaw. See [CONTRIBUTING.md](CONTRIBUTING.md) f
 | `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
 | `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
 
+## Custom Skills Documentation
+
+When adding or modifying skills directly on this fork (not via `/add-skill`), you MUST update [CUSTOM_SKILLS.md](CUSTOM_SKILLS.md) to document the skill's purpose, lifecycle, required `.env` variables, and key files. Keep it current — it is the source of truth for fork-specific customizations.
+
 ## Contributing
 
 Before creating a PR, adding a skill, or preparing any contribution, you MUST read [CONTRIBUTING.md](CONTRIBUTING.md). It covers accepted change types, the four skill types and their guidelines, SKILL.md format rules, PR requirements, and the pre-submission checklist (searching for existing PRs/issues, testing, description format).

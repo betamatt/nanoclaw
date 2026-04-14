@@ -19,10 +19,13 @@ interface CalendarEvent {
 
 function runJxa(script: string): string {
   try {
-    return execSync(`osascript -l JavaScript -e '${script.replace(/'/g, "'\\''")}'`, {
-      encoding: 'utf-8',
-      timeout: 15000,
-    }).trim();
+    return execSync(
+      `osascript -l JavaScript -e '${script.replace(/'/g, "'\\''")}'`,
+      {
+        encoding: 'utf-8',
+        timeout: 15000,
+      },
+    ).trim();
   } catch (err: any) {
     logger.error({ err: err.message }, 'JXA execution failed');
     throw new Error(`Calendar error: ${err.stderr || err.message}`);
@@ -38,7 +41,11 @@ export function listCalendars(): string[] {
   return JSON.parse(runJxa(script));
 }
 
-export function getEvents(startDate: string, endDate: string, calendarName?: string): CalendarEvent[] {
+export function getEvents(
+  startDate: string,
+  endDate: string,
+  calendarName?: string,
+): CalendarEvent[] {
   const calFilter = calendarName
     ? `const cals = [app.calendars.byName("${calendarName.replace(/"/g, '\\"')}")];`
     : `const cals = app.calendars();`;
@@ -139,23 +146,32 @@ export function deleteEvent(eventId: string, calendarName?: string): boolean {
   return JSON.parse(runJxa(script));
 }
 
-export function updateEvent(eventId: string, updates: {
-  title?: string;
-  startDate?: string;
-  endDate?: string;
-  location?: string;
-  notes?: string;
-}, calendarName?: string): CalendarEvent | null {
+export function updateEvent(
+  eventId: string,
+  updates: {
+    title?: string;
+    startDate?: string;
+    endDate?: string;
+    location?: string;
+    notes?: string;
+  },
+  calendarName?: string,
+): CalendarEvent | null {
   const calFilter = calendarName
     ? `const cals = [app.calendars.byName("${calendarName.replace(/"/g, '\\"')}")];`
     : `const cals = app.calendars();`;
 
   const setters: string[] = [];
-  if (updates.title) setters.push(`e.summary = "${updates.title.replace(/"/g, '\\"')}";`);
-  if (updates.startDate) setters.push(`e.startDate = new Date("${updates.startDate}");`);
-  if (updates.endDate) setters.push(`e.endDate = new Date("${updates.endDate}");`);
-  if (updates.location) setters.push(`e.location = "${updates.location.replace(/"/g, '\\"')}";`);
-  if (updates.notes) setters.push(`e.description = "${updates.notes.replace(/"/g, '\\"')}";`);
+  if (updates.title)
+    setters.push(`e.summary = "${updates.title.replace(/"/g, '\\"')}";`);
+  if (updates.startDate)
+    setters.push(`e.startDate = new Date("${updates.startDate}");`);
+  if (updates.endDate)
+    setters.push(`e.endDate = new Date("${updates.endDate}");`);
+  if (updates.location)
+    setters.push(`e.location = "${updates.location.replace(/"/g, '\\"')}";`);
+  if (updates.notes)
+    setters.push(`e.description = "${updates.notes.replace(/"/g, '\\"')}";`);
 
   const script = `
     const app = Application("Calendar");
@@ -190,21 +206,45 @@ export interface CalendarRequest {
   params: Record<string, any>;
 }
 
-export function handleCalendarRequest(req: CalendarRequest): { success: boolean; data?: any; error?: string } {
+export function handleCalendarRequest(req: CalendarRequest): {
+  success: boolean;
+  data?: any;
+  error?: string;
+} {
   try {
     switch (req.action) {
       case 'list_calendars':
         return { success: true, data: listCalendars() };
       case 'get_events':
-        return { success: true, data: getEvents(req.params.startDate, req.params.endDate, req.params.calendar) };
+        return {
+          success: true,
+          data: getEvents(
+            req.params.startDate,
+            req.params.endDate,
+            req.params.calendar,
+          ),
+        };
       case 'create_event':
         return { success: true, data: createEvent(req.params as any) };
       case 'delete_event':
-        return { success: true, data: deleteEvent(req.params.eventId, req.params.calendar) };
+        return {
+          success: true,
+          data: deleteEvent(req.params.eventId, req.params.calendar),
+        };
       case 'update_event':
-        return { success: true, data: updateEvent(req.params.eventId, req.params.updates, req.params.calendar) };
+        return {
+          success: true,
+          data: updateEvent(
+            req.params.eventId,
+            req.params.updates,
+            req.params.calendar,
+          ),
+        };
       default:
-        return { success: false, error: `Unknown calendar action: ${req.action}` };
+        return {
+          success: false,
+          error: `Unknown calendar action: ${req.action}`,
+        };
     }
   } catch (err: any) {
     return { success: false, error: err.message };

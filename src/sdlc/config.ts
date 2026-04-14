@@ -20,11 +20,7 @@ export const SDLC_WEBHOOK_PORT = parseInt(
 );
 export const GITHUB_WEBHOOK_SECRET =
   process.env.GITHUB_WEBHOOK_SECRET || sdlcEnv.GITHUB_WEBHOOK_SECRET || '';
-export const SDLC_REPOS = (
-  process.env.SDLC_REPOS ||
-  sdlcEnv.SDLC_REPOS ||
-  ''
-)
+export const SDLC_REPOS = (process.env.SDLC_REPOS || sdlcEnv.SDLC_REPOS || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);

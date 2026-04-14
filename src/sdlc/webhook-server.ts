@@ -2,12 +2,21 @@ import crypto from 'crypto';
 import http from 'http';
 
 import { logger } from '../logger.js';
-import { GITHUB_WEBHOOK_SECRET, SDLC_REPOS, SDLC_WEBHOOK_PORT } from './config.js';
+import {
+  GITHUB_WEBHOOK_SECRET,
+  SDLC_REPOS,
+  SDLC_WEBHOOK_PORT,
+} from './config.js';
 import type { SdlcPipeline } from './pipeline.js';
 
-function verifySignature(payload: Buffer, signature: string | undefined): boolean {
+function verifySignature(
+  payload: Buffer,
+  signature: string | undefined,
+): boolean {
   if (!GITHUB_WEBHOOK_SECRET) {
-    logger.warn('GITHUB_WEBHOOK_SECRET not set — skipping signature verification');
+    logger.warn(
+      'GITHUB_WEBHOOK_SECRET not set — skipping signature verification',
+    );
     return true;
   }
   if (!signature) return false;
@@ -46,7 +55,9 @@ export function startWebhookServer(pipeline: SdlcPipeline): http.Server {
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
       const body = Buffer.concat(chunks);
-      const signature = req.headers['x-hub-signature-256'] as string | undefined;
+      const signature = req.headers['x-hub-signature-256'] as
+        | string
+        | undefined;
 
       if (!verifySignature(body, signature)) {
         logger.warn('Webhook signature verification failed');
@@ -75,10 +86,7 @@ export function startWebhookServer(pipeline: SdlcPipeline): http.Server {
   });
 
   server.listen(SDLC_WEBHOOK_PORT, () => {
-    logger.info(
-      { port: SDLC_WEBHOOK_PORT },
-      'SDLC webhook server listening',
-    );
+    logger.info({ port: SDLC_WEBHOOK_PORT }, 'SDLC webhook server listening');
   });
 
   return server;

@@ -67,16 +67,16 @@ export function createWorktree(
 
   if (branch) {
     // Create new branch and worktree for implementation
-    execSync(
-      `git worktree add ${wtPath} -b ${branch} origin/main`,
-      { cwd: mainDir, stdio: 'pipe' },
-    );
+    execSync(`git worktree add ${wtPath} -b ${branch} origin/main`, {
+      cwd: mainDir,
+      stdio: 'pipe',
+    });
   } else {
     // Worktree on detached HEAD at origin/main for investigation
-    execSync(
-      `git worktree add --detach ${wtPath} origin/main`,
-      { cwd: mainDir, stdio: 'pipe' },
-    );
+    execSync(`git worktree add --detach ${wtPath} origin/main`, {
+      cwd: mainDir,
+      stdio: 'pipe',
+    });
   }
 
   installGitGuardrails(wtPath, repo);
@@ -103,10 +103,16 @@ function installGitGuardrails(wtPath: string, repo: string): void {
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
     if (name) {
-      execSync(`git config user.name "${name}"`, { cwd: wtPath, stdio: 'pipe' });
+      execSync(`git config user.name "${name}"`, {
+        cwd: wtPath,
+        stdio: 'pipe',
+      });
     }
     if (email) {
-      execSync(`git config user.email "${email}"`, { cwd: wtPath, stdio: 'pipe' });
+      execSync(`git config user.email "${email}"`, {
+        cwd: wtPath,
+        stdio: 'pipe',
+      });
     }
     logger.debug({ repo, name, email }, 'Git identity set from repo history');
   } catch {

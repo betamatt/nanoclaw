@@ -93,6 +93,10 @@ From the main channel (your self-chat), you can manage groups and tasks:
 @Andy join the Family Chat group
 ```
 
+## Fork-Specific Skills
+
+This fork includes custom skills not found in upstream NanoClaw. See **[CUSTOM_SKILLS.md](CUSTOM_SKILLS.md)** for full documentation, required `.env` variables, and lifecycle details.
+
 ## Customizing
 
 NanoClaw doesn't use configuration files. To make changes, just tell Claude Code what you want:
