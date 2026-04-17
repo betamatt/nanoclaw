@@ -40,16 +40,22 @@ ${issue.issue_body || '(no body)'}
    \`\`\`
    **Stop here** — do NOT classify or label the issue yet.
 
-5. **Only when you are 90%+ confident** you could plan this, classify the issue:
+5. **Check for blocking dependencies.** Look for references in the issue body like "blocked by #N", "depends on #N", "after #N", "requires #N". For each referenced issue, check if it's still open:
+   \`\`\`bash
+   gh issue view <N> --json state --jq .state
+   \`\`\`
+   If any blocking issues are still open, include them in your IPC result (see step 9). The pipeline will pause until they close. Note: you should still complete classification (steps 6-8) even if the issue is blocked.
+
+6. **Only when you are 90%+ confident** you could plan this, classify the issue:
    - **Type**: One of: bug, feature, chore, security
    - **Complexity**: One of: small (straightforward, isolated change), med (moderate scope, multiple files), large (significant effort, architectural changes)
 
-6. Add labels to the issue using the GitHub CLI:
+7. Add labels to the issue using the GitHub CLI:
    \`\`\`bash
    gh issue edit ${issue.issue_number} --add-label "<type>,complexity:<complexity>"
    \`\`\`
 
-7. Post a triage summary as an issue comment:
+8. Post a triage summary as an issue comment:
    \`\`\`bash
    gh issue comment ${issue.issue_number} --body "## Triage Summary
 
@@ -67,12 +73,13 @@ ${issue.issue_body || '(no body)'}
    *Automated triage by SDLC pipeline*"
    \`\`\`
 
-8. Write your result to the IPC directory:
+9. Write your result to the IPC directory. If there are open blocking issues, include them in the \`blockers\` array:
    \`\`\`bash
    cat > /workspace/ipc/sdlc/result-$(date +%s%N).json << 'RESULT_EOF'
-   {"type":"sdlc_stage_result","issueNumber":${issue.issue_number},"repo":"${issue.repo}","stage":"triage","success":true,"metadata":{"classification":{"type":"<type>","complexity":"<complexity>"}}}
+   {"type":"sdlc_stage_result","issueNumber":${issue.issue_number},"repo":"${issue.repo}","stage":"triage","success":true,"metadata":{"classification":{"type":"<type>","complexity":"<complexity>"},"blockers":[{"repo":"${issue.repo}","issue_number":<N>}]}}
    RESULT_EOF
    \`\`\`
+   Omit the \`blockers\` field (or use an empty array) if there are no open blocking issues.
 
 ## Important
 - Do NOT proceed past triage unless you are 90%+ confident you could produce a realistic implementation plan
@@ -158,12 +165,17 @@ The repository is mounted at /workspace/extra/repo on branch \`${branchName}\`.
 
 ## Instructions
 
-1. **Read the approved plan**: Check the issue comments for the implementation plan:
+1. **Read the approved plan and any feedback**: Check the issue comments for the implementation plan, and check if a PR already exists with review comments or feedback:
    \`\`\`bash
    gh issue view ${issue.issue_number} --comments
    \`\`\`
+   If a PR already exists for this branch, read the review comments — they may contain requested changes:
+   \`\`\`bash
+   gh pr view ${branchName} --comments 2>/dev/null
+   gh pr diff ${branchName} 2>/dev/null
+   \`\`\`
 
-2. **Implement the changes**: Follow the plan precisely. Write clean, well-tested code.
+2. **Implement the changes**: Follow the plan precisely. If there is existing PR feedback, address it. Write clean, well-tested code.
 
 3. **Run the tests**. Identify the project's test command (e.g., \`go test ./...\`, \`npm test\`, \`make test\`) and run it:
    \`\`\`bash
@@ -329,6 +341,7 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
 - Fix what you're confident about, flag what you're not
 - When in doubt, leave a comment rather than making a wrong fix
 - Inline comments on specific lines are more useful than vague PR comments
+- **If you flag items for human review (items_flagged > 0), the pipeline will pause** until a human resolves them. Be judicious — only flag things that genuinely need human input. Things you can fix yourself should be fixed, not flagged.
 - **NEVER add Co-Authored-By, Signed-off-by, or any attribution to Claude/Anthropic in commits.** Commit as the repo's git identity — it is already configured.
 - Do NOT approve or merge the PR`;
 }

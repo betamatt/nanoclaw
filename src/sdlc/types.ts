@@ -5,11 +5,14 @@ import type { RegisteredGroup } from '../types.js';
 
 export type SdlcStage =
   | 'triage'
+  | 'blocked'
   | 'plan'
   | 'awaiting_approval'
   | 'implement'
   | 'review'
+  | 'review_flagged'
   | 'validate'
+  | 'awaiting_merge'
   | 'done'
   | 'failed';
 
@@ -28,9 +31,15 @@ export interface SdlcIssue {
   branch_name: string | null;
   pr_number: number | null;
   retry_count: number;
+  blocked_by: string | null;
   metadata: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface BlockerRef {
+  repo: string;
+  issue_number: number;
 }
 
 export interface SdlcStageResult {

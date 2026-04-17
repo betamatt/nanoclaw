@@ -50,9 +50,16 @@ Issue Opened
     |
     v
 1. TRIAGE — Agent reads the issue and codebase. Classifies as bug/feature/chore/security
-   and small/med/large complexity. Adds labels. If the issue is unclear, asks clarifying
+   and small/med/large complexity. Adds labels. Detects blocking dependencies
+   ("blocked by #N", "depends on #N"). If the issue is unclear, asks clarifying
    questions and pauses (resume with `/sdlc retry` comment). Only proceeds when 90%+
    confident it can produce a realistic plan.
+    |
+    v
+   BLOCKED (conditional) — If blocking issues are open, the pipeline pauses here.
+   Adds `sdlc:blocked` label. Automatically resumes when all blockers are closed
+   (detected via `issues.closed` webhook) or when blockers are removed from the
+   issue body (detected via `issues.edited` webhook).
     |
     v
 2. PLAN — Agent investigates the codebase in a git worktree, creates a detailed
@@ -124,6 +131,7 @@ On startup, the pipeline ensures these labels exist on each configured repo:
 |-------|---------|
 | `bug`, `feature`, `chore`, `security` | Issue type classification |
 | `complexity:small`, `complexity:med`, `complexity:large` | Effort estimation |
+| `sdlc:blocked` | Issue blocked by dependencies |
 | `sdlc:plan-ready` | Plan posted, awaiting human approval |
 | `sdlc:approve-plan` | Human approved the plan |
 | `sdlc:validated` | PR validated against requirements |

@@ -159,10 +159,20 @@ async function handleEvent(
           issue.body || '',
           issue.labels.map((l) => l.name),
         );
+      } else if (action === 'closed') {
+        await pipeline.handleIssueClosed(repo, issue.number);
+      } else if (action === 'edited') {
+        await pipeline.handleIssueEdited(
+          repo,
+          issue.number,
+          issue.body || '',
+        );
       } else if (action === 'labeled') {
         const label = payload.label as GitHubLabel | undefined;
         if (label?.name === 'sdlc:approve-plan') {
           await pipeline.handlePlanApproved(repo, issue.number);
+        } else if (label?.name === 'sdlc:review-resolved') {
+          await pipeline.handleReviewResolved(repo, issue.number);
         }
       }
       break;
@@ -174,10 +184,23 @@ async function handleEvent(
       const issue = payload.issue as GitHubIssue | undefined;
       if (!comment || !issue) break;
 
-      if (comment.body.includes('/sdlc retry')) {
+      if (comment.body.includes('/sdlc resume')) {
+        await pipeline.handleResume(repo, issue.number);
+      } else if (comment.body.includes('/sdlc retry')) {
         await pipeline.handleRetry(repo, issue.number);
+      } else if (comment.body.includes('/sdlc review resolved')) {
+        await pipeline.handleReviewResolved(repo, issue.number);
       } else if (isPlanApproval(comment.body)) {
         await pipeline.handlePlanApproved(repo, issue.number);
+      }
+      break;
+    }
+
+    case 'pull_request': {
+      if (action !== 'closed') break;
+      const pr = payload.pull_request as { number: number; merged: boolean } | undefined;
+      if (pr?.merged) {
+        await pipeline.handlePrMerged(repo, pr.number);
       }
       break;
     }

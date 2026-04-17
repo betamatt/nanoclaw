@@ -99,14 +99,14 @@ function ensureWebhookForRepo(
     // Ensure it has the right events and is active
     const needsUpdate =
       !match.active ||
-      !['issues', 'issue_comment'].every((e) => match.events.includes(e));
+      !['issues', 'issue_comment', 'pull_request'].every((e) => match.events.includes(e));
 
     if (needsUpdate) {
       execSync(
         `gh api repos/${repo}/hooks/${match.id} -X PATCH -f 'active=true' --input -`,
         {
           input: JSON.stringify({
-            events: ['issues', 'issue_comment'],
+            events: ['issues', 'issue_comment', 'pull_request'],
             active: true,
           }),
           encoding: 'utf-8',
@@ -124,7 +124,7 @@ function ensureWebhookForRepo(
   const payload = JSON.stringify({
     name: 'web',
     active: true,
-    events: ['issues', 'issue_comment'],
+    events: ['issues', 'issue_comment', 'pull_request'],
     config: {
       url: webhookUrl,
       content_type: 'json',
@@ -184,6 +184,16 @@ const SDLC_LABELS = [
     name: 'sdlc:validated',
     color: '2ea44f',
     description: 'SDLC: PR validated against requirements',
+  },
+  {
+    name: 'sdlc:review-resolved',
+    color: '0e8a16',
+    description: 'SDLC: Review items resolved — proceed to validation',
+  },
+  {
+    name: 'sdlc:blocked',
+    color: 'fbca04',
+    description: 'SDLC: Issue blocked by dependencies',
   },
   {
     name: 'sdlc:failed',
