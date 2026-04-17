@@ -7,23 +7,47 @@ description: Add Microsoft Teams channel integration to NanoClaw v2 via Chat SDK
 
 Connect NanoClaw to Microsoft Teams for interactive chat in team channels, group chats, and direct messages.
 
-## Pre-flight
-
-Check if `src/channels/teams.ts` exists and the import is uncommented in `src/channels/index.ts`. If both are in place, skip to Credentials.
-
 ## Install
 
+v2 trunk doesn't ship channels. This skill copies the Teams adapter in from the `channels` branch.
+
+### Pre-flight (idempotent)
+
+Skip to **Credentials** if all of these are already in place:
+
+- `src/channels/teams.ts` exists
+- `src/channels/index.ts` contains `import './teams.js';`
+- `@chat-adapter/teams` is listed in `package.json` dependencies
+
+Otherwise continue. Every step below is safe to re-run.
+
+### 1. Fetch the channels branch
+
 ```bash
-pnpm install @chat-adapter/teams
+git fetch origin channels
 ```
 
-Uncomment the Teams import in `src/channels/index.ts`:
+### 2. Copy the adapter
+
+```bash
+git show origin/channels:src/channels/teams.ts > src/channels/teams.ts
+```
+
+### 3. Append the self-registration import
+
+Append to `src/channels/index.ts` (skip if the line is already present):
 
 ```typescript
 import './teams.js';
 ```
 
-Build:
+### 4. Install the adapter package (pinned)
+
+```bash
+pnpm install @chat-adapter/teams@4.26.0
+```
+
+### 5. Build
 
 ```bash
 pnpm run build

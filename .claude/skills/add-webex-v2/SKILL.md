@@ -7,21 +7,47 @@ description: Add Webex channel integration to NanoClaw v2 via Chat SDK.
 
 Adds Cisco Webex support to NanoClaw v2 using the Chat SDK bridge.
 
-## Pre-flight
-
-Check if `src/channels/webex.ts` exists and the import is uncommented in `src/channels/index.ts`. If both are in place, skip to Credentials.
-
 ## Install
 
+v2 trunk doesn't ship channels. This skill copies the Webex adapter in from the `channels` branch.
+
+### Pre-flight (idempotent)
+
+Skip to **Credentials** if all of these are already in place:
+
+- `src/channels/webex.ts` exists
+- `src/channels/index.ts` contains `import './webex.js';`
+- `@bitbasti/chat-adapter-webex` is listed in `package.json` dependencies
+
+Otherwise continue. Every step below is safe to re-run.
+
+### 1. Fetch the channels branch
+
 ```bash
-pnpm install @bitbasti/chat-adapter-webex
+git fetch origin channels
 ```
 
-Uncomment the Webex import in `src/channels/index.ts`:
+### 2. Copy the adapter
+
+```bash
+git show origin/channels:src/channels/webex.ts > src/channels/webex.ts
+```
+
+### 3. Append the self-registration import
+
+Append to `src/channels/index.ts` (skip if the line is already present):
 
 ```typescript
 import './webex.js';
 ```
+
+### 4. Install the adapter package (pinned)
+
+```bash
+pnpm install @bitbasti/chat-adapter-webex@0.1.0
+```
+
+### 5. Build
 
 ```bash
 pnpm run build

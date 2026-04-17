@@ -7,21 +7,47 @@ description: Add Linear channel integration to NanoClaw v2 via Chat SDK. Issue c
 
 Adds Linear support to NanoClaw v2 using the Chat SDK bridge. The agent participates in issue comment threads.
 
-## Pre-flight
-
-Check if `src/channels/linear.ts` exists and the import is uncommented in `src/channels/index.ts`. If both are in place, skip to Credentials.
-
 ## Install
 
+v2 trunk doesn't ship channels. This skill copies the Linear adapter in from the `channels` branch.
+
+### Pre-flight (idempotent)
+
+Skip to **Credentials** if all of these are already in place:
+
+- `src/channels/linear.ts` exists
+- `src/channels/index.ts` contains `import './linear.js';`
+- `@chat-adapter/linear` is listed in `package.json` dependencies
+
+Otherwise continue. Every step below is safe to re-run.
+
+### 1. Fetch the channels branch
+
 ```bash
-pnpm install @chat-adapter/linear
+git fetch origin channels
 ```
 
-Uncomment the Linear import in `src/channels/index.ts`:
+### 2. Copy the adapter
+
+```bash
+git show origin/channels:src/channels/linear.ts > src/channels/linear.ts
+```
+
+### 3. Append the self-registration import
+
+Append to `src/channels/index.ts` (skip if the line is already present):
 
 ```typescript
 import './linear.js';
 ```
+
+### 4. Install the adapter package (pinned)
+
+```bash
+pnpm install @chat-adapter/linear@4.26.0
+```
+
+### 5. Build
 
 ```bash
 pnpm run build

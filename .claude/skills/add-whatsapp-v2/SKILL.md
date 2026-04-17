@@ -7,36 +7,59 @@ description: Add WhatsApp channel to NanoClaw v2 using native Baileys adapter. D
 
 Adds WhatsApp support to NanoClaw v2 using the native Baileys adapter (no Chat SDK bridge).
 
-## Pre-flight
-
-Check if `src/channels/whatsapp.ts` exists and the import is uncommented in `src/channels/index.ts`. If both are in place, skip to Credentials.
-
 ## Install
 
-### Install the adapter packages
+v2 trunk doesn't ship channels. This skill copies the native WhatsApp (Baileys) adapter and its `whatsapp-auth` setup step in from the `channels` branch. No Chat SDK bridge.
+
+### Pre-flight (idempotent)
+
+Skip to **Credentials** if all of these are already in place:
+
+- `src/channels/whatsapp.ts` exists
+- `src/channels/index.ts` contains `import './whatsapp.js';`
+- `setup/whatsapp-auth.ts` exists and `setup/index.ts`'s `STEPS` map contains `'whatsapp-auth':`
+- `@whiskeysockets/baileys`, `qrcode` are listed in `package.json` dependencies
+
+Otherwise continue. Every step below is safe to re-run.
+
+### 1. Fetch the channels branch
 
 ```bash
-pnpm install @whiskeysockets/baileys@^6.7.21 pino@^9.6.0 qrcode@^1.5.4 @types/qrcode@^1.5.6
+git fetch origin channels
 ```
 
-### Enable the channel
-
-If `src/channels/whatsapp.ts` is missing, fetch it from upstream:
+### 2. Copy the adapter and setup step
 
 ```bash
-git remote -v | grep -q upstream || git remote add upstream https://github.com/qwibitai/nanoclaw.git
-git fetch upstream v2
-git checkout upstream/v2 -- src/channels/whatsapp.ts
+git show origin/channels:src/channels/whatsapp.ts > src/channels/whatsapp.ts
+git show origin/channels:setup/whatsapp-auth.ts   > setup/whatsapp-auth.ts
 ```
 
-Uncomment or add the WhatsApp import in `src/channels/index.ts`:
+### 3. Append the self-registration import
+
+Append to `src/channels/index.ts` (skip if already present):
 
 ```typescript
-// whatsapp (native, no Chat SDK)
 import './whatsapp.js';
 ```
 
-### Build
+### 4. Register the setup step
+
+In `setup/index.ts`, add this entry to the `STEPS` map (skip if already present):
+
+```typescript
+'whatsapp-auth': () => import('./whatsapp-auth.js'),
+```
+
+### 5. Install the adapter packages (pinned)
+
+```bash
+pnpm install @whiskeysockets/baileys@6.17.16 qrcode@1.5.4 @types/qrcode@1.5.6
+```
+
+`pino` is already a v2 trunk dependency — no separate install needed.
+
+### 6. Build
 
 ```bash
 pnpm run build

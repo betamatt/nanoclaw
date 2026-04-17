@@ -7,27 +7,61 @@ description: Add Telegram channel integration to NanoClaw v2 via Chat SDK.
 
 Adds Telegram bot support to NanoClaw v2 using the Chat SDK bridge.
 
-## Pre-flight
-
-Check if `src/channels/telegram.ts` exists and the import is uncommented in `src/channels/index.ts`. If both are in place, skip to Credentials.
-
 ## Install
 
-### Install the adapter package
+v2 trunk doesn't ship channels. This skill copies the Telegram adapter, its formatting/pairing helpers, their tests, and the `pair-telegram` setup step in from the `channels` branch.
+
+### Pre-flight (idempotent)
+
+Skip to **Credentials** if all of these are already in place:
+
+- `src/channels/telegram.ts`, `telegram-pairing.ts`, `telegram-markdown-sanitize.ts` (and their `.test.ts` siblings) all exist
+- `src/channels/index.ts` contains `import './telegram.js';`
+- `setup/pair-telegram.ts` exists and `setup/index.ts`'s `STEPS` map contains `'pair-telegram':`
+- `@chat-adapter/telegram` is listed in `package.json` dependencies
+
+Otherwise continue. Every step below is safe to re-run.
+
+### 1. Fetch the channels branch
 
 ```bash
-pnpm install @chat-adapter/telegram
+git fetch origin channels
 ```
 
-### Enable the channel
+### 2. Copy the adapter, helpers, tests, and setup step
 
-Uncomment the Telegram import in `src/channels/index.ts`:
+```bash
+git show origin/channels:src/channels/telegram.ts                        > src/channels/telegram.ts
+git show origin/channels:src/channels/telegram-pairing.ts                > src/channels/telegram-pairing.ts
+git show origin/channels:src/channels/telegram-pairing.test.ts           > src/channels/telegram-pairing.test.ts
+git show origin/channels:src/channels/telegram-markdown-sanitize.ts      > src/channels/telegram-markdown-sanitize.ts
+git show origin/channels:src/channels/telegram-markdown-sanitize.test.ts > src/channels/telegram-markdown-sanitize.test.ts
+git show origin/channels:setup/pair-telegram.ts                          > setup/pair-telegram.ts
+```
+
+### 3. Append the self-registration import
+
+Append to `src/channels/index.ts` (skip if already present):
 
 ```typescript
 import './telegram.js';
 ```
 
-### Build
+### 4. Register the setup step
+
+In `setup/index.ts`, add this entry to the `STEPS` map (right after the `register` line is fine; skip if already present):
+
+```typescript
+'pair-telegram': () => import('./pair-telegram.js'),
+```
+
+### 5. Install the adapter package (pinned)
+
+```bash
+pnpm install @chat-adapter/telegram@4.26.0
+```
+
+### 6. Build
 
 ```bash
 pnpm run build

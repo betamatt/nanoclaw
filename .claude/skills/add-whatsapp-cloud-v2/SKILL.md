@@ -7,23 +7,47 @@ description: Add WhatsApp Business Cloud API channel to NanoClaw v2 via Chat SDK
 
 Connect NanoClaw to WhatsApp via the official Meta WhatsApp Business Cloud API.
 
-## Pre-flight
-
-Check if `src/channels/whatsapp-cloud.ts` exists and the import is uncommented in `src/channels/index.ts`. If both are in place, skip to Credentials.
-
 ## Install
 
+v2 trunk doesn't ship channels. This skill copies the WhatsApp Cloud adapter in from the `channels` branch.
+
+### Pre-flight (idempotent)
+
+Skip to **Credentials** if all of these are already in place:
+
+- `src/channels/whatsapp-cloud.ts` exists
+- `src/channels/index.ts` contains `import './whatsapp-cloud.js';`
+- `@chat-adapter/whatsapp` is listed in `package.json` dependencies
+
+Otherwise continue. Every step below is safe to re-run.
+
+### 1. Fetch the channels branch
+
 ```bash
-pnpm install @chat-adapter/whatsapp
+git fetch origin channels
 ```
 
-Uncomment the WhatsApp Cloud API import in `src/channels/index.ts`:
+### 2. Copy the adapter
+
+```bash
+git show origin/channels:src/channels/whatsapp-cloud.ts > src/channels/whatsapp-cloud.ts
+```
+
+### 3. Append the self-registration import
+
+Append to `src/channels/index.ts` (skip if the line is already present):
 
 ```typescript
 import './whatsapp-cloud.js';
 ```
 
-Build:
+### 4. Install the adapter package (pinned)
+
+```bash
+pnpm install @chat-adapter/whatsapp@4.26.0
+```
+
+### 5. Build
 
 ```bash
 pnpm run build
