@@ -58,8 +58,17 @@ export function createWorktree(
   const mainDir = ensureRepoCloned(repo);
   const wtPath = getWorktreePath(repo, issueNumber);
 
-  // If worktree already exists, just return it
+  // If worktree already exists, update to latest origin/main
   if (fs.existsSync(wtPath)) {
+    if (!branch) {
+      try {
+        execSync('git fetch origin', { cwd: mainDir, stdio: 'pipe' });
+        execSync('git checkout --detach origin/main', { cwd: wtPath, stdio: 'pipe' });
+        logger.debug({ repo, issueNumber }, 'Updated existing worktree to latest origin/main');
+      } catch (err) {
+        logger.warn({ repo, issueNumber, err }, 'Failed to update worktree');
+      }
+    }
     return wtPath;
   }
 
@@ -180,6 +189,34 @@ export function switchWorktreeToBranch(
   });
 
   logger.info({ repo, issueNumber, branch }, 'Switched worktree to branch');
+}
+
+/**
+ * Attempt to rebase a worktree's branch onto latest origin/main.
+ * Returns true if rebase succeeded, false if conflicts were detected.
+ */
+export function rebaseWorktree(repo: string, issueNumber: number): boolean {
+  const mainDir = ensureRepoCloned(repo); // also fetches origin
+  const wtPath = getWorktreePath(repo, issueNumber);
+
+  if (!fs.existsSync(wtPath)) return false;
+
+  try {
+    // Fetch is already done by ensureRepoCloned, but ensure main ref is current
+    execSync('git fetch origin main', { cwd: mainDir, stdio: 'pipe' });
+    execSync('git rebase origin/main', { cwd: wtPath, stdio: 'pipe' });
+    logger.info({ repo, issueNumber }, 'Rebased worktree onto origin/main');
+    return true;
+  } catch {
+    // Abort the failed rebase
+    try {
+      execSync('git rebase --abort', { cwd: wtPath, stdio: 'pipe' });
+    } catch {
+      // ignore — may not be in rebase state
+    }
+    logger.warn({ repo, issueNumber }, 'Rebase failed — conflicts detected');
+    return false;
+  }
 }
 
 /**

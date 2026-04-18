@@ -92,6 +92,18 @@ export function planPrompt(issue: SdlcIssue): string {
   const classification = issue.classification
     ? JSON.parse(issue.classification)
     : { type: 'unknown', complexity: 'unknown' };
+  const meta = JSON.parse(issue.metadata || '{}');
+  const feedbackSection = meta.pending_feedback
+    ? `
+## Human Feedback (ACTION REQUIRED)
+Your previous plan was reviewed and the following feedback was provided. You MUST incorporate this feedback into your revised plan:
+
+> ${meta.pending_feedback}
+
+Read the issue comments for the previous plan and all feedback, then produce an updated plan that addresses the feedback.
+
+`
+    : '';
 
   return `You are creating an implementation plan for a GitHub issue.
 
@@ -102,7 +114,7 @@ export function planPrompt(issue: SdlcIssue): string {
 ${issue.issue_body || '(no body)'}
 - Type: ${classification.type}
 - Complexity: ${classification.complexity}
-
+${feedbackSection}
 ## Your Working Directory
 The repository is mounted at /workspace/extra/repo. Explore the codebase to understand the architecture before planning.
 
@@ -191,7 +203,15 @@ The repository is mounted at /workspace/extra/repo on branch \`${branchName}\`.
    - Explain what human input is needed to resolve each failure
    - Do NOT remove or comment out the failing tests
 
-5. **Commit and push your changes**:
+5. **Rebase onto latest main** before pushing, to avoid merge conflicts:
+   \`\`\`bash
+   cd /workspace/extra/repo
+   git fetch origin main
+   git rebase origin/main
+   \`\`\`
+   If the rebase has conflicts, resolve them. If you cannot resolve them cleanly, abort the rebase and note the conflicts in the PR description.
+
+6. **Commit and push your changes**:
    \`\`\`bash
    cd /workspace/extra/repo
    git add -A
@@ -199,25 +219,25 @@ The repository is mounted at /workspace/extra/repo on branch \`${branchName}\`.
    git push origin ${branchName}
    \`\`\`
 
-6. **Open a pull request**:
+7. **Open a pull request**:
    \`\`\`bash
    gh pr create --title "Implement #${issue.issue_number}: ${issue.issue_title}" --body "## Summary
 
-   Implements #${issue.issue_number}
+   Resolves #${issue.issue_number}
 
    <describe what you implemented and any decisions made>
 
-   ## Test Results
-   <report test results: all passing, or list failures with explanations>
+   ## Known Test Failures
+   <ONLY include this section if there are test failures you could not fix. Explain what fails and why. Omit this section entirely if all tests pass.>
 
    ## Test Plan
-   <how to verify the changes work>
+   <ONLY include this section if there are manual/non-automated verification steps needed. Omit if the automated test suite covers everything.>
 
    ---
    *Automated implementation by SDLC pipeline*" --head ${branchName}
    \`\`\`
 
-7. **Write IPC result** (include the PR number):
+8. **Write IPC result** (include the PR number):
    \`\`\`bash
    PR_NUMBER=$(gh pr view ${branchName} --json number --jq .number)
    cat > /workspace/ipc/sdlc/result-$(date +%s%N).json << RESULT_EOF
@@ -236,6 +256,19 @@ The repository is mounted at /workspace/extra/repo on branch \`${branchName}\`.
 }
 
 export function reviewPrompt(issue: SdlcIssue): string {
+  const meta = JSON.parse(issue.metadata || '{}');
+  const feedbackSection = meta.pending_feedback
+    ? `
+## Human Feedback (ACTION REQUIRED)
+The following feedback was left by a human reviewer. This is your **primary task** — address this feedback directly before doing anything else:
+
+> ${meta.pending_feedback}
+
+Read the PR comments for full context, then make the requested changes, commit, and push.
+
+`
+    : '';
+
   return `You are performing a comprehensive code review of a pull request.
 
 ## Issue Details
@@ -243,25 +276,36 @@ export function reviewPrompt(issue: SdlcIssue): string {
 - Issue #${issue.issue_number}: ${issue.issue_title}
 - PR #${issue.pr_number}
 - Branch: ${issue.branch_name}
-
+${feedbackSection}
 ## Your Working Directory
 The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_name}\`.
 
 ## Instructions
 
-1. **Set commit status to pending** so the review is visible on the PR:
+1. **Sync with main** — always rebase onto the latest main before doing anything else:
+   \`\`\`bash
+   cd /workspace/extra/repo
+   git fetch origin main
+   git rebase origin/main
+   \`\`\`
+   If there are conflicts, resolve them, then \`git rebase --continue\`. After a successful rebase, push:
+   \`\`\`bash
+   git push --force-with-lease origin ${issue.branch_name}
+   \`\`\`
+
+2. **Set commit status to pending** so the review is visible on the PR:
    \`\`\`bash
    cd /workspace/extra/repo
    SHA=$(git rev-parse HEAD)
    gh api repos/${issue.repo}/statuses/$SHA -X POST -f state=pending -f context="sdlc/review" -f description="Automated code review in progress"
    \`\`\`
 
-2. **Read the PR diff**:
+3. **Read the PR diff**:
    \`\`\`bash
    gh pr diff ${issue.pr_number}
    \`\`\`
 
-3. **Review the code** for:
+4. **Review the code** for:
    - Correctness: Does it do what the issue asks?
    - Code quality: Clean, readable, follows project conventions?
    - Edge cases: Are boundary conditions handled?
@@ -269,7 +313,7 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
    - Tests: Are changes adequately tested?
    - Performance: Any obvious performance issues?
 
-4. **Fix issues you are confident about**: If you find clear problems (bugs, typos, missing error handling, convention violations), fix them directly, commit, and push:
+5. **Fix issues you are confident about**: If you find clear problems (bugs, typos, missing error handling, convention violations), fix them directly, commit, and push:
    \`\`\`bash
    cd /workspace/extra/repo
    # Make fixes...
@@ -278,7 +322,7 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
    git push origin ${issue.branch_name}
    \`\`\`
 
-5. **Leave inline PR comments for things you can't resolve yourself**:
+6. **Leave inline PR comments for things you can't resolve yourself**:
    - Questions about intent or design choices where you're unsure of the right answer
    - Potential issues that depend on domain knowledge you don't have
    - Trade-offs that a human should weigh in on
@@ -302,7 +346,7 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
    gh pr comment ${issue.pr_number} --body "> **Reviewer note:** <your concern or question>"
    \`\`\`
 
-6. **Post a review summary** as a PR comment:
+7. **Post a review summary** as a PR comment:
    \`\`\`bash
    gh pr comment ${issue.pr_number} --body "## Code Review Summary
 
@@ -323,14 +367,14 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
    *Automated review by SDLC pipeline*"
    \`\`\`
 
-7. **Set commit status to complete**:
+8. **Set commit status to complete**:
    \`\`\`bash
    cd /workspace/extra/repo
    SHA=$(git rev-parse HEAD)
    gh api repos/${issue.repo}/statuses/$SHA -X POST -f state=success -f context="sdlc/review" -f description="Code review complete — <issues_found> issues found, <issues_fixed> fixed, <items_flagged> flagged"
    \`\`\`
 
-8. **Write IPC result**:
+9. **Write IPC result**:
    \`\`\`bash
    cat > /workspace/ipc/sdlc/result-$(date +%s%N).json << 'RESULT_EOF'
    {"type":"sdlc_stage_result","issueNumber":${issue.issue_number},"repo":"${issue.repo}","stage":"review","success":true,"metadata":{"issues_found":<n>,"issues_fixed":<n>,"items_flagged":<n>}}
@@ -362,35 +406,46 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
 
 ## Instructions
 
-1. **Set commit status to pending**:
+1. **Sync with main** — rebase onto the latest main before validating:
+   \`\`\`bash
+   cd /workspace/extra/repo
+   git fetch origin main
+   git rebase origin/main
+   \`\`\`
+   If there are conflicts, resolve them, then \`git rebase --continue\`. After a successful rebase, push:
+   \`\`\`bash
+   git push --force-with-lease origin ${issue.branch_name}
+   \`\`\`
+
+2. **Set commit status to pending**:
    \`\`\`bash
    cd /workspace/extra/repo
    SHA=$(git rev-parse HEAD)
    gh api repos/${issue.repo}/statuses/$SHA -X POST -f state=pending -f context="sdlc/validate" -f description="Validation in progress"
    \`\`\`
 
-2. **Re-read the original issue** to understand the requirements:
+3. **Re-read the original issue** to understand the requirements:
    \`\`\`bash
    gh issue view ${issue.issue_number}
    \`\`\`
 
-3. **Read the PR changes**:
+4. **Read the PR changes**:
    \`\`\`bash
    gh pr diff ${issue.pr_number}
    \`\`\`
 
-4. **Check CI status**:
+5. **Check CI status**:
    \`\`\`bash
    gh pr checks ${issue.pr_number}
    \`\`\`
 
-5. **Validate requirements**:
+6. **Validate requirements**:
    - Does each requirement from the issue have a corresponding change?
    - Are there any requirements that were missed?
    - Are tests passing?
    - Is the implementation complete or are there loose ends?
 
-6. **Post validation summary**:
+7. **Post validation summary**:
    \`\`\`bash
    gh pr comment ${issue.pr_number} --body "## Validation Summary
 
@@ -407,12 +462,12 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
    *Automated validation by SDLC pipeline*"
    \`\`\`
 
-7. **If validation passes**, add the validated label:
+8. **If validation passes**, add the validated label:
    \`\`\`bash
    gh issue edit ${issue.issue_number} --add-label "sdlc:validated"
    \`\`\`
 
-8. **Set commit status to reflect the verdict**:
+9. **Set commit status to reflect the verdict**:
    \`\`\`bash
    cd /workspace/extra/repo
    SHA=$(git rev-parse HEAD)
@@ -420,7 +475,7 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
    gh api repos/${issue.repo}/statuses/$SHA -X POST -f state=<success|failure> -f context="sdlc/validate" -f description="Validation <PASS|FAIL>: <brief reason>"
    \`\`\`
 
-9. **Write IPC result**:
+10. **Write IPC result**:
    \`\`\`bash
    cat > /workspace/ipc/sdlc/result-$(date +%s%N).json << 'RESULT_EOF'
    {"type":"sdlc_stage_result","issueNumber":${issue.issue_number},"repo":"${issue.repo}","stage":"validate","success":true,"metadata":{"verdict":"pass"}}

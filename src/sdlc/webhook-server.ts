@@ -7,7 +7,24 @@ import {
   SDLC_REPOS,
   SDLC_WEBHOOK_PORT,
 } from './config.js';
+import { execSync } from 'child_process';
+import { readEnvFile } from '../env.js';
 import type { SdlcPipeline } from './pipeline.js';
+
+/** Add a thumbs-up reaction to a comment to acknowledge it. */
+function ghReact(repo: string, commentId: number): void {
+  try {
+    const ghEnv = readEnvFile(['GITHUB_TOKEN']);
+    const token = ghEnv.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
+    if (!token) return;
+    execSync(
+      `gh api repos/${repo}/issues/comments/${commentId}/reactions -X POST -f content="+1"`,
+      { env: { ...process.env, GITHUB_TOKEN: token }, stdio: 'pipe' },
+    );
+  } catch {
+    // best-effort
+  }
+}
 
 function verifySignature(
   payload: Buffer,
@@ -162,11 +179,7 @@ async function handleEvent(
       } else if (action === 'closed') {
         await pipeline.handleIssueClosed(repo, issue.number);
       } else if (action === 'edited') {
-        await pipeline.handleIssueEdited(
-          repo,
-          issue.number,
-          issue.body || '',
-        );
+        await pipeline.handleIssueEdited(repo, issue.number, issue.body || '');
       } else if (action === 'labeled') {
         const label = payload.label as GitHubLabel | undefined;
         if (label?.name === 'sdlc:approve-plan') {
@@ -180,27 +193,92 @@ async function handleEvent(
 
     case 'issue_comment': {
       if (action !== 'created') break;
-      const comment = payload.comment as { body: string } | undefined;
+      const comment = payload.comment as { id: number; body: string } | undefined;
       const issue = payload.issue as GitHubIssue | undefined;
       if (!comment || !issue) break;
 
-      if (comment.body.includes('/sdlc resume')) {
-        await pipeline.handleResume(repo, issue.number);
-      } else if (comment.body.includes('/sdlc retry')) {
-        await pipeline.handleRetry(repo, issue.number);
-      } else if (comment.body.includes('/sdlc review resolved')) {
-        await pipeline.handleReviewResolved(repo, issue.number);
-      } else if (isPlanApproval(comment.body)) {
-        await pipeline.handlePlanApproved(repo, issue.number);
+      // Resolve the SDLC issue number — PRs have different numbers than their issues
+      const { getSdlcIssue, getSdlcIssueByPr } = await import('./db.js');
+      const isPr = !!(issue as unknown as Record<string, unknown>).pull_request;
+      let sdlcIssueNumber = issue.number;
+      if (!getSdlcIssue(repo, issue.number) && isPr) {
+        const byPr = getSdlcIssueByPr(repo, issue.number);
+        if (byPr) sdlcIssueNumber = byPr.issue_number;
       }
+
+      let acted = false;
+      if (comment.body.includes('/sdlc resume')) {
+        await pipeline.handleResume(repo, sdlcIssueNumber);
+        acted = true;
+      } else if (comment.body.includes('/sdlc retry')) {
+        await pipeline.handleRetry(repo, sdlcIssueNumber);
+        acted = true;
+      } else if (comment.body.includes('/sdlc review resolved')) {
+        await pipeline.handleReviewResolved(repo, sdlcIssueNumber);
+        acted = true;
+      } else if (isPlanApproval(comment.body)) {
+        await pipeline.handlePlanApproved(repo, sdlcIssueNumber);
+        acted = true;
+      } else if (!isAgentComment(comment.body)) {
+        acted = await pipeline.handleFeedback(repo, sdlcIssueNumber, comment.body);
+      }
+
+      if (acted) ghReact(repo, comment.id);
       break;
     }
 
     case 'pull_request': {
       if (action !== 'closed') break;
-      const pr = payload.pull_request as { number: number; merged: boolean } | undefined;
+      const pr = payload.pull_request as
+        | { number: number; merged: boolean }
+        | undefined;
       if (pr?.merged) {
         await pipeline.handlePrMerged(repo, pr.number);
+      }
+      break;
+    }
+
+    case 'pull_request_review': {
+      if (action !== 'submitted') break;
+      const review = payload.review as { body: string; state: string } | undefined;
+      const pr = payload.pull_request as { number: number } | undefined;
+      if (!review || !pr) break;
+      if (isAgentComment(review.body || '')) break;
+
+      // Find the SDLC issue for this PR
+      const { getSdlcIssueByPr } = await import('./db.js');
+      const prIssue = getSdlcIssueByPr(repo, pr.number);
+      if (!prIssue) break;
+
+      if (review.state === 'changes_requested' || review.body?.trim()) {
+        await pipeline.handleFeedback(repo, prIssue.issue_number, review.body || '');
+      }
+      break;
+    }
+
+    case 'pull_request_review_comment': {
+      if (action !== 'created') break;
+      const comment = payload.comment as { id: number; body: string } | undefined;
+      const pr = payload.pull_request as { number: number } | undefined;
+      if (!comment || !pr) break;
+      if (isAgentComment(comment.body)) break;
+
+      const { getSdlcIssueByPr: getByPr } = await import('./db.js');
+      const prIssue2 = getByPr(repo, pr.number);
+      if (!prIssue2) break;
+
+      const prActed = await pipeline.handleFeedback(repo, prIssue2.issue_number, comment.body);
+      if (prActed) {
+        try {
+          const ghEnv = readEnvFile(['GITHUB_TOKEN']);
+          const token = ghEnv.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
+          if (token) {
+            execSync(
+              `gh api repos/${repo}/pulls/comments/${comment.id}/reactions -X POST -f content="+1"`,
+              { env: { ...process.env, GITHUB_TOKEN: token }, stdio: 'pipe' },
+            );
+          }
+        } catch { /* best-effort */ }
       }
       break;
     }

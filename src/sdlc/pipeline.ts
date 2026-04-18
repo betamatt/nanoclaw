@@ -1,3 +1,4 @@
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -5,7 +6,7 @@ import { DATA_DIR } from '../config.js';
 import { runContainerAgent } from '../container-runner.js';
 import { logger } from '../logger.js';
 import type { RegisteredGroup } from '../types.js';
-import { MAX_SDLC_RETRIES, SDLC_WEBHOOK_URL } from './config.js';
+import { MAX_SDLC_RETRIES, SDLC_MAX_HEAVY_CONTAINERS, SDLC_WEBHOOK_URL } from './config.js';
 import {
   getAllSdlcIssues,
   getIssuesBlockedBy,
@@ -18,6 +19,7 @@ import { getPromptForStage } from './prompts.js';
 import {
   createWorktree,
   getWorktreePath,
+  rebaseWorktree,
   removeWorktree,
   switchWorktreeToBranch,
 } from './repo-manager.js';
@@ -49,6 +51,9 @@ const RUNNABLE_STAGES = new Set<SdlcStage>([
   'review',
   'validate',
 ]);
+
+/** Heavy stages that are capped by SDLC_MAX_HEAVY_CONTAINERS */
+const HEAVY_STAGES = new Set<SdlcStage>(['implement', 'review', 'validate']);
 
 function issueJid(repo: string, issueNumber: number): string {
   return `sdlc:${repo}#${issueNumber}`;
@@ -96,12 +101,13 @@ function ghLabel(
     const ghEnv = readEnvFile(['GITHUB_TOKEN']);
     const token = ghEnv.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
     if (!token) return;
-    const { execSync } = require('child_process') as typeof import('child_process');
+    const { execSync } =
+      require('child_process') as typeof import('child_process');
     const flag = action === 'add' ? '--add-label' : '--remove-label';
-    execSync(
-      `gh issue edit ${issueNumber} ${flag} "${label}" --repo ${repo}`,
-      { env: { ...process.env, GITHUB_TOKEN: token }, stdio: 'pipe' },
-    );
+    execSync(`gh issue edit ${issueNumber} ${flag} "${label}" --repo ${repo}`, {
+      env: { ...process.env, GITHUB_TOKEN: token },
+      stdio: 'pipe',
+    });
   } catch {
     // best-effort
   }
@@ -111,13 +117,11 @@ function ghLabel(
  * Fetch open sub-issues for a GitHub issue via GraphQL.
  * Returns empty array if the issue has no sub-issues or on error.
  */
-function getOpenSubIssues(
-  repo: string,
-  issueNumber: number,
-): BlockerRef[] {
+function getOpenSubIssues(repo: string, issueNumber: number): BlockerRef[] {
   try {
     const { readEnvFile } = require('../env.js') as typeof import('../env.js');
-    const { execSync } = require('child_process') as typeof import('child_process');
+    const { execSync } =
+      require('child_process') as typeof import('child_process');
     const ghEnv = readEnvFile(['GITHUB_TOKEN']);
     const token = ghEnv.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
     if (!token) return [];
@@ -151,7 +155,8 @@ function ghComment(repo: string, issueNumber: number, body: string): void {
     const ghEnv = readEnvFile(['GITHUB_TOKEN']);
     const token = ghEnv.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
     if (!token) return;
-    const { execSync } = require('child_process') as typeof import('child_process');
+    const { execSync } =
+      require('child_process') as typeof import('child_process');
     execSync(
       `gh issue comment ${issueNumber} --repo ${repo} --body "${body.replace(/"/g, '\\"')}"`,
       { env: { ...process.env, GITHUB_TOKEN: token }, stdio: 'pipe' },
@@ -169,11 +174,43 @@ function slugify(title: string): string {
     .slice(0, 40);
 }
 
+/**
+ * Replace bare issue/PR references (#N) with GitHub links in notification text.
+ * Finds the repo from "in owner/repo" context, then linkifies all #N in the message.
+ */
+function linkifyRefs(text: string): string {
+  // Extract repo from the message (pattern: "in owner/repo")
+  const repoMatch = text.match(/\bin\s+([\w.-]+\/[\w.-]+)/);
+  if (!repoMatch) return text;
+  const repo = repoMatch[1];
+
+  // Replace bare #N that aren't already inside markdown links [#N](...)
+  // Use a callback to avoid re-matching within replacement strings
+  const parts: string[] = [];
+  let lastIdx = 0;
+  const re = /(?<!\[)#(\d+)(?!\])/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    parts.push(text.slice(lastIdx, m.index));
+    parts.push(`[#${m[1]}](https://github.com/${repo}/issues/${m[1]})`);
+    lastIdx = re.lastIndex;
+  }
+  parts.push(text.slice(lastIdx));
+  return parts.join('');
+}
+
 export class SdlcPipeline {
   private deps: SdlcPipelineDeps;
+  private heavyActiveCount = 0;
+  private deferredHeavyQueue: SdlcIssue[] = [];
+  private heavyDrainTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(deps: SdlcPipelineDeps) {
     this.deps = deps;
+  }
+
+  private async notify(text: string): Promise<void> {
+    await this.deps.sendNotification(linkifyRefs(text));
   }
 
   async handleIssueOpened(
@@ -217,7 +254,7 @@ export class SdlcPipeline {
     }
 
     logger.info({ repo, issueNumber }, 'SDLC issue created, starting triage');
-    await this.deps.sendNotification(
+    await this.notify(
       `SDLC: New issue #${issueNumber} in ${repo} — starting triage`,
     );
 
@@ -248,7 +285,7 @@ export class SdlcPipeline {
       { repo, issueNumber },
       'Plan approved, starting implementation',
     );
-    await this.deps.sendNotification(
+    await this.notify(
       `SDLC: Plan approved for #${issueNumber} in ${repo} — starting implementation`,
     );
 
@@ -274,7 +311,7 @@ export class SdlcPipeline {
         'Parent issue blocked by open sub-issues',
       );
 
-      await this.deps.sendNotification(
+      await this.notify(
         `SDLC: #${issueNumber} in ${repo} plan approved but blocked by sub-issues ${blockerList} — will resume when they close`,
       );
       return;
@@ -292,6 +329,87 @@ export class SdlcPipeline {
     const updated = getSdlcIssue(repo, issueNumber)!;
     this.ensureGroup(updated);
     this.enqueueStage(updated);
+  }
+
+  async handleFeedback(repo: string, issueNumber: number, feedbackText?: string): Promise<boolean> {
+    const issue = getSdlcIssue(repo, issueNumber);
+    if (!issue) return false;
+
+    const stage = issue.current_stage;
+
+    // Only act on feedback-responsive stages
+    const responsiveStages = new Set(['awaiting_approval', 'review_flagged', 'awaiting_merge', 'failed']);
+    if (!responsiveStages.has(stage)) {
+      logger.debug(
+        { repo, issueNumber, stage },
+        'Feedback ignored — not in a feedback-responsive stage',
+      );
+      return false;
+    }
+
+    // Determine if the comment is actionable — skip comments that are
+    // clearly directed at other people or are conversational noise
+    if (feedbackText) {
+      const text = feedbackText.trim().toLowerCase();
+      // Skip @mentions to other users (not the bot)
+      if (/^@\w/.test(text) && !text.startsWith('@sdlc')) {
+        logger.debug({ repo, issueNumber }, 'Feedback ignored — directed at another user');
+        return false;
+      }
+      // Skip very short non-actionable responses
+      if (['thanks', 'thank you', 'ty', 'ok', 'k', 'cool', 'nice', '👍', '🎉', '✅'].includes(text)) {
+        logger.debug({ repo, issueNumber }, 'Feedback ignored — non-actionable response');
+        return false;
+      }
+    }
+
+    const meta = JSON.parse(issue.metadata || '{}');
+
+    // Store the feedback so the prompt can reference it directly
+    if (feedbackText) {
+      meta.pending_feedback = feedbackText;
+    }
+
+    let targetStage: SdlcStage;
+
+    if (stage === 'awaiting_approval') {
+      logger.info({ repo, issueNumber }, 'Plan feedback received — re-planning');
+      await this.notify(
+        `SDLC: Feedback on plan for #${issueNumber} in ${repo} — re-planning`,
+      );
+      targetStage = 'plan';
+    } else if (stage === 'review_flagged') {
+      logger.info({ repo, issueNumber }, 'Review feedback received — re-reviewing');
+      await this.notify(
+        `SDLC: Feedback on review for #${issueNumber} in ${repo} — re-reviewing`,
+      );
+      targetStage = 'review';
+    } else if (stage === 'awaiting_merge') {
+      logger.info({ repo, issueNumber }, 'Merge feedback received — applying changes');
+      await this.notify(
+        `SDLC: Feedback on #${issueNumber} in ${repo} — applying requested changes`,
+      );
+      targetStage = 'review';
+    } else if (stage === 'failed') {
+      const retryStage = meta.conflict_from_stage || meta.failed_at_stage || 'triage';
+      logger.info({ repo, issueNumber, retryStage }, 'Feedback on failed issue — retrying');
+      await this.notify(
+        `SDLC: Feedback on failed #${issueNumber} in ${repo} — retrying ${retryStage}`,
+      );
+      targetStage = retryStage;
+    } else {
+      return false;
+    }
+
+    updateSdlcStage(repo, issueNumber, targetStage, {
+      retry_count: 0,
+      metadata: JSON.stringify(meta),
+    });
+
+    const updated = getSdlcIssue(repo, issueNumber)!;
+    this.ensureGroup(updated);
+    this.enqueueStage(updated);
+    return true;
   }
 
   async handleStageResult(result: SdlcStageResult): Promise<void> {
@@ -331,7 +449,7 @@ export class SdlcPipeline {
     const retryStage = (meta.failed_stage as SdlcStage) || 'triage';
 
     logger.info({ repo, issueNumber, retryStage }, 'Retrying failed issue');
-    await this.deps.sendNotification(
+    await this.notify(
       `SDLC: Retrying #${issueNumber} in ${repo} from ${retryStage}`,
     );
 
@@ -342,10 +460,7 @@ export class SdlcPipeline {
     this.enqueueStage(updated);
   }
 
-  async handleReviewResolved(
-    repo: string,
-    issueNumber: number,
-  ): Promise<void> {
+  async handleReviewResolved(repo: string, issueNumber: number): Promise<void> {
     const issue = getSdlcIssue(repo, issueNumber);
     if (!issue) {
       logger.warn({ repo, issueNumber }, 'Review resolved for unknown issue');
@@ -364,7 +479,7 @@ export class SdlcPipeline {
       { repo, issueNumber },
       'Review items resolved, advancing to validation',
     );
-    await this.deps.sendNotification(
+    await this.notify(
       `SDLC: Review resolved for #${issueNumber} in ${repo} — starting validation`,
     );
 
@@ -400,7 +515,7 @@ export class SdlcPipeline {
       { repo, issueNumber, from: issue.current_stage, to: resumeStage },
       'Resuming SDLC issue',
     );
-    await this.deps.sendNotification(
+    await this.notify(
       `SDLC: Resuming #${issueNumber} in ${repo} at ${resumeStage} (was ${issue.current_stage})`,
     );
 
@@ -424,8 +539,10 @@ export class SdlcPipeline {
 
   private determineResumeStage(issue: SdlcIssue): SdlcStage {
     try {
-      const { readEnvFile } = require('../env.js') as typeof import('../env.js');
-      const { execSync } = require('child_process') as typeof import('child_process');
+      const { readEnvFile } =
+        require('../env.js') as typeof import('../env.js');
+      const { execSync } =
+        require('child_process') as typeof import('child_process');
       const ghEnv = readEnvFile(['GITHUB_TOKEN']);
       const token = ghEnv.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
       if (!token) return 'triage';
@@ -457,7 +574,10 @@ export class SdlcPipeline {
       if (issue.classification) return 'plan';
       return 'triage';
     } catch (err) {
-      logger.warn({ err, issue: issue.issue_number }, 'Failed to determine resume stage, defaulting to triage');
+      logger.warn(
+        { err, issue: issue.issue_number },
+        'Failed to determine resume stage, defaulting to triage',
+      );
       return 'triage';
     }
   }
@@ -478,9 +598,80 @@ export class SdlcPipeline {
     updateSdlcStage(issue.repo, issue.issue_number, 'done');
     removeWorktree(issue.repo, issue.issue_number);
 
-    await this.deps.sendNotification(
+    await this.notify(
       `SDLC: #${issue.issue_number} in ${issue.repo} — PR #${prNumber} merged. Done.`,
     );
+
+    // Check all in-flight branches for conflicts with the new main
+    await this.rebaseInFlightBranches(repo);
+  }
+
+  /**
+   * After a PR merges, attempt to rebase all in-flight branches onto the new main.
+   * If rebase fails (conflicts), pause the issue and post a comment on the PR.
+   */
+  private async rebaseInFlightBranches(repo: string): Promise<void> {
+    const REBASE_STAGES: Set<SdlcStage> = new Set([
+      'review', 'review_flagged', 'validate', 'awaiting_merge',
+    ]);
+
+    const allIssues = getAllSdlcIssues();
+    const candidates = allIssues.filter(
+      (i) => i.repo === repo && i.branch_name && REBASE_STAGES.has(i.current_stage),
+    );
+
+    if (candidates.length === 0) return;
+
+    logger.info(
+      { repo, count: candidates.length },
+      'Post-merge: rebasing in-flight branches',
+    );
+
+    for (const issue of candidates) {
+      const success = rebaseWorktree(repo, issue.issue_number);
+
+      if (success) {
+        // Push the rebased branch
+        try {
+          const wtPath = getWorktreePath(repo, issue.issue_number);
+          execSync(`git push --force-with-lease origin ${issue.branch_name}`, {
+            cwd: wtPath,
+            stdio: 'pipe',
+          });
+          logger.info(
+            { repo, issueNumber: issue.issue_number, branch: issue.branch_name },
+            'Rebased and pushed branch',
+          );
+        } catch (err) {
+          logger.warn(
+            { repo, issueNumber: issue.issue_number, err },
+            'Rebase succeeded but push failed',
+          );
+        }
+      } else {
+        // Conflict — send to review stage so the agent can resolve it
+        const meta = JSON.parse(issue.metadata || '{}');
+        meta.pending_feedback = `Merge conflict: automatic rebase onto main failed. You must resolve the conflicts manually:\n1. Run \`git fetch origin main && git rebase origin/main\` in /workspace/extra/repo\n2. Resolve all conflicts\n3. Run \`git rebase --continue\`\n4. Run tests to verify nothing broke\n5. Push with \`git push --force-with-lease origin ${issue.branch_name}\`\n\nIf you cannot resolve a conflict because it requires human judgment, post a PR comment explaining the conflict and what decision is needed, then write a failure result.`;
+
+        updateSdlcStage(repo, issue.issue_number, 'review', {
+          retry_count: 0,
+          metadata: JSON.stringify(meta),
+        });
+
+        const updated = getSdlcIssue(repo, issue.issue_number)!;
+        this.ensureGroup(updated);
+        this.enqueueStage(updated);
+
+        await this.notify(
+          `SDLC: #${issue.issue_number} in ${repo} — merge conflict detected, sending to review for resolution`,
+        );
+
+        logger.warn(
+          { repo, issueNumber: issue.issue_number, stage: issue.current_stage },
+          'Post-merge rebase conflict — sending to review',
+        );
+      }
+    }
   }
 
   /**
@@ -498,7 +689,7 @@ export class SdlcPipeline {
       updateSdlcStage(repo, issueNumber, 'done');
       removeWorktree(repo, issueNumber);
 
-      await this.deps.sendNotification(
+      await this.notify(
         `SDLC: #${issueNumber} in ${repo} closed. Done.`,
       );
     }
@@ -529,7 +720,7 @@ export class SdlcPipeline {
           'Issue unblocked, advancing to plan',
         );
 
-        await this.deps.sendNotification(
+        await this.notify(
           `SDLC: #${issue.issue_number} in ${issue.repo} unblocked — starting plan`,
         );
 
@@ -585,7 +776,7 @@ export class SdlcPipeline {
           'Blockers removed from issue body, advancing to plan',
         );
 
-        await this.deps.sendNotification(
+        await this.notify(
           `SDLC: #${issueNumber} in ${repo} unblocked (blockers removed) — starting plan`,
         );
 
@@ -616,7 +807,7 @@ export class SdlcPipeline {
         'Issue moved to blocked (body edited)',
       );
 
-      await this.deps.sendNotification(
+      await this.notify(
         `SDLC: #${issueNumber} in ${repo} now blocked by ${blockerList}`,
       );
     }
@@ -695,8 +886,32 @@ export class SdlcPipeline {
           'Issue blocked',
         );
 
-        await this.deps.sendNotification(
+        await this.notify(
           `SDLC: #${issue.issue_number} in ${issue.repo} blocked by ${blockerList} — will resume when they close`,
+        );
+        return;
+      }
+    }
+
+    // After triage (and no explicit blockers), check sub-issues
+    if (issue.current_stage === 'triage') {
+      const openSubIssues = getOpenSubIssues(issue.repo, issue.issue_number);
+      if (openSubIssues.length > 0) {
+        const blockerList = openSubIssues
+          .map((b) => `#${b.issue_number}`)
+          .join(', ');
+        updates.blocked_by = JSON.stringify(openSubIssues);
+        updateSdlcStage(issue.repo, issue.issue_number, 'blocked', updates);
+
+        ghLabel(issue.repo, issue.issue_number, 'add', 'sdlc:blocked');
+
+        logger.info(
+          { repo: issue.repo, issueNumber: issue.issue_number, subIssues: blockerList },
+          'Parent issue blocked by open sub-issues',
+        );
+
+        await this.notify(
+          `SDLC: #${issue.issue_number} in ${issue.repo} blocked by sub-issues ${blockerList} — will resume when they close`,
         );
         return;
       }
@@ -708,7 +923,12 @@ export class SdlcPipeline {
       metadata?.items_flagged &&
       (metadata.items_flagged as number) > 0
     ) {
-      updateSdlcStage(issue.repo, issue.issue_number, 'review_flagged', updates);
+      updateSdlcStage(
+        issue.repo,
+        issue.issue_number,
+        'review_flagged',
+        updates,
+      );
 
       logger.info(
         {
@@ -725,7 +945,7 @@ export class SdlcPipeline {
         `Code review flagged ${metadata.items_flagged} item(s) for human review on PR #${issue.pr_number}. Pipeline paused.\n\nAdd the \`sdlc:review-resolved\` label or comment \`/sdlc review resolved\` to continue to validation.`,
       );
 
-      await this.deps.sendNotification(
+      await this.notify(
         `SDLC: #${issue.issue_number} in ${issue.repo} — review flagged ${metadata.items_flagged} item(s) for human. Paused until resolved.`,
       );
       return;
@@ -743,7 +963,7 @@ export class SdlcPipeline {
       'SDLC stage advanced',
     );
 
-    await this.deps.sendNotification(
+    await this.notify(
       `SDLC: #${issue.issue_number} in ${issue.repo} — ${issue.current_stage} -> ${nextStage}`,
     );
 
@@ -808,7 +1028,7 @@ export class SdlcPipeline {
       'SDLC issue failed after max retries',
     );
 
-    await this.deps.sendNotification(
+    await this.notify(
       `SDLC: #${issue.issue_number} in ${issue.repo} FAILED at ${issue.current_stage} — comment \`/sdlc retry\` on the issue to retry`,
     );
   }
@@ -844,6 +1064,30 @@ export class SdlcPipeline {
     const stage = issue.current_stage;
     if (!RUNNABLE_STAGES.has(stage)) return;
 
+    const isHeavy = HEAVY_STAGES.has(stage);
+
+    // Gate heavy stages to keep slots available for triage/plan/chat
+    if (isHeavy && this.heavyActiveCount >= SDLC_MAX_HEAVY_CONTAINERS) {
+      if (!this.deferredHeavyQueue.some(i => i.repo === issue.repo && i.issue_number === issue.issue_number)) {
+        this.deferredHeavyQueue.push(issue);
+        logger.info(
+          {
+            repo: issue.repo,
+            issueNumber: issue.issue_number,
+            stage,
+            heavyActive: this.heavyActiveCount,
+            heavyLimit: SDLC_MAX_HEAVY_CONTAINERS,
+            deferred: this.deferredHeavyQueue.length,
+          },
+          'Heavy stage deferred — at heavy-container limit',
+        );
+      }
+      this.ensureHeavyDrainTimer();
+      return;
+    }
+
+    if (isHeavy) this.heavyActiveCount++;
+
     const jid = issueJid(issue.repo, issue.issue_number);
     const folder = issueFolder(issue.repo, issue.issue_number);
 
@@ -854,56 +1098,116 @@ export class SdlcPipeline {
     const prompt = getPromptForStage(stage, issue);
 
     this.deps.queue.enqueueTask(jid, taskId, async () => {
-      const group = this.deps.registeredGroups()[jid];
-      if (!group) {
-        logger.error({ jid }, 'SDLC group not found');
-        return;
-      }
+      try {
+        const group = this.deps.registeredGroups()[jid];
+        if (!group) {
+          logger.error({ jid }, 'SDLC group not found');
+          return;
+        }
 
-      // Ensure IPC sdlc directory exists for this group
-      const ipcSdlcDir = path.join(DATA_DIR, 'ipc', folder, 'sdlc');
-      fs.mkdirSync(ipcSdlcDir, { recursive: true });
+        // Ensure IPC sdlc directory exists for this group
+        const ipcSdlcDir = path.join(DATA_DIR, 'ipc', folder, 'sdlc');
+        fs.mkdirSync(ipcSdlcDir, { recursive: true });
 
-      const sessionId = this.deps.getSessions()[folder];
+        const sessionId = this.deps.getSessions()[folder];
 
-      const output = await runContainerAgent(
-        group,
-        {
-          prompt,
-          sessionId,
-          groupFolder: folder,
-          chatJid: jid,
-          isMain: false,
-          isScheduledTask: true,
-          assistantName: 'SDLC Agent',
-        },
-        (proc, containerName) =>
-          this.deps.onProcess(jid, proc, containerName, folder),
-      );
-
-      if (output.newSessionId) {
-        this.deps.setSession(folder, output.newSessionId);
-      }
-
-      if (output.status === 'error') {
-        logger.error(
+        const output = await runContainerAgent(
+          group,
           {
-            repo: issue.repo,
-            issueNumber: issue.issue_number,
-            stage,
-            error: output.error,
+            prompt,
+            sessionId,
+            groupFolder: folder,
+            chatJid: jid,
+            isMain: false,
+            isScheduledTask: true,
+            assistantName: 'SDLC Agent',
           },
-          'SDLC container error',
+          (proc, containerName) =>
+            this.deps.onProcess(jid, proc, containerName, folder),
+          async (streamedOutput) => {
+            // Close container immediately — SDLC stages are single-turn
+            if (streamedOutput.status === 'success' || streamedOutput.result) {
+              this.deps.queue.notifyIdle(jid);
+              this.deps.queue.closeStdin(jid);
+            }
+          },
         );
-        // IPC result may not have been written — treat container error as stage failure
-        const currentIssue = getSdlcIssue(issue.repo, issue.issue_number);
-        if (currentIssue && currentIssue.current_stage === stage) {
-          await this.handleFailure(currentIssue, {
-            error: output.error || 'Container exited with error',
-          });
+
+        if (output.newSessionId) {
+          this.deps.setSession(folder, output.newSessionId);
+        }
+
+        // Clear pending feedback after the stage has consumed it
+        const currentMeta = getSdlcIssue(issue.repo, issue.issue_number);
+        if (currentMeta?.metadata) {
+          const m = JSON.parse(currentMeta.metadata);
+          if (m.pending_feedback) {
+            delete m.pending_feedback;
+            updateSdlcStage(issue.repo, issue.issue_number, currentMeta.current_stage, {
+              metadata: JSON.stringify(m),
+            });
+          }
+        }
+
+        if (output.status === 'error') {
+          logger.error(
+            {
+              repo: issue.repo,
+              issueNumber: issue.issue_number,
+              stage,
+              error: output.error,
+            },
+            'SDLC container error',
+          );
+          // IPC result may not have been written — treat container error as stage failure
+          const currentIssue = getSdlcIssue(issue.repo, issue.issue_number);
+          if (currentIssue && currentIssue.current_stage === stage) {
+            await this.handleFailure(currentIssue, {
+              error: output.error || 'Container exited with error',
+            });
+          }
+        }
+      } finally {
+        if (isHeavy) {
+          this.heavyActiveCount--;
+          this.drainDeferredHeavy();
         }
       }
     });
+  }
+
+  private drainDeferredHeavy(): void {
+    while (
+      this.deferredHeavyQueue.length > 0 &&
+      this.heavyActiveCount < SDLC_MAX_HEAVY_CONTAINERS
+    ) {
+      const deferred = this.deferredHeavyQueue.shift()!;
+      // Re-read from DB in case stage changed while deferred
+      const current = getSdlcIssue(deferred.repo, deferred.issue_number);
+      if (current && HEAVY_STAGES.has(current.current_stage)) {
+        logger.info(
+          {
+            repo: current.repo,
+            issueNumber: current.issue_number,
+            stage: current.current_stage,
+            heavyActive: this.heavyActiveCount,
+          },
+          'Draining deferred heavy stage',
+        );
+        this.enqueueStage(current);
+      }
+    }
+    if (this.deferredHeavyQueue.length === 0 && this.heavyDrainTimer) {
+      clearInterval(this.heavyDrainTimer);
+      this.heavyDrainTimer = null;
+    }
+  }
+
+  private ensureHeavyDrainTimer(): void {
+    if (this.heavyDrainTimer) return;
+    // Periodic check in case a heavy container finishes without triggering drain
+    // (e.g. container killed externally)
+    this.heavyDrainTimer = setInterval(() => this.drainDeferredHeavy(), 30_000);
   }
 }
 

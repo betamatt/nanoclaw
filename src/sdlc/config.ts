@@ -1,6 +1,6 @@
 import path from 'path';
 
-import { DATA_DIR } from '../config.js';
+import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from '../config.js';
 import { readEnvFile } from '../env.js';
 
 const sdlcEnv = readEnvFile([
@@ -9,6 +9,7 @@ const sdlcEnv = readEnvFile([
   'SDLC_WEBHOOK_URL',
   'GITHUB_WEBHOOK_SECRET',
   'SDLC_REPOS',
+  'SDLC_MAX_HEAVY_CONTAINERS',
   'TAILSCALE_SOCKET',
 ]);
 
@@ -30,3 +31,12 @@ export const TAILSCALE_SOCKET =
   process.env.TAILSCALE_SOCKET || sdlcEnv.TAILSCALE_SOCKET || '';
 export const SDLC_REPOS_BASE = path.join(DATA_DIR, 'sdlc-repos');
 export const MAX_SDLC_RETRIES = 2;
+export const SDLC_MAX_HEAVY_CONTAINERS = Math.max(
+  1,
+  parseInt(
+    process.env.SDLC_MAX_HEAVY_CONTAINERS ||
+      sdlcEnv.SDLC_MAX_HEAVY_CONTAINERS ||
+      String(MAX_CONCURRENT_CONTAINERS - 1),
+    10,
+  ) || MAX_CONCURRENT_CONTAINERS - 1,
+);

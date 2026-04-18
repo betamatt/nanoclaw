@@ -288,24 +288,24 @@ export class GroupQueue {
 
     const state = this.getGroup(groupJid);
 
-    // Tasks first (they won't be re-discovered from SQLite like messages)
+    // Messages first (chat, issue comments — interactive, latency-sensitive)
+    if (state.pendingMessages) {
+      this.runForGroup(groupJid, 'drain').catch((err) =>
+        logger.error(
+          { groupJid, err },
+          'Unhandled error in runForGroup (drain)',
+        ),
+      );
+      return;
+    }
+
+    // Then pending tasks (SDLC stages — background, latency-tolerant)
     if (state.pendingTasks.length > 0) {
       const task = state.pendingTasks.shift()!;
       this.runTask(groupJid, task).catch((err) =>
         logger.error(
           { groupJid, taskId: task.id, err },
           'Unhandled error in runTask (drain)',
-        ),
-      );
-      return;
-    }
-
-    // Then pending messages
-    if (state.pendingMessages) {
-      this.runForGroup(groupJid, 'drain').catch((err) =>
-        logger.error(
-          { groupJid, err },
-          'Unhandled error in runForGroup (drain)',
         ),
       );
       return;
@@ -320,11 +320,25 @@ export class GroupQueue {
       this.waitingGroups.length > 0 &&
       this.activeCount < MAX_CONCURRENT_CONTAINERS
     ) {
-      const nextJid = this.waitingGroups.shift()!;
+      // Prioritize groups with pending messages (chat, issue comments) over
+      // groups with only pending tasks (SDLC stages). This keeps interactive
+      // responses snappy even when the task queue is full.
+      const msgIdx = this.waitingGroups.findIndex((jid) => {
+        const s = this.getGroup(jid);
+        return s.pendingMessages;
+      });
+      const pickIdx = msgIdx >= 0 ? msgIdx : 0;
+      const [nextJid] = this.waitingGroups.splice(pickIdx, 1);
       const state = this.getGroup(nextJid);
 
-      // Prioritize tasks over messages
-      if (state.pendingTasks.length > 0) {
+      if (state.pendingMessages) {
+        this.runForGroup(nextJid, 'drain').catch((err) =>
+          logger.error(
+            { groupJid: nextJid, err },
+            'Unhandled error in runForGroup (waiting)',
+          ),
+        );
+      } else if (state.pendingTasks.length > 0) {
         const task = state.pendingTasks.shift()!;
         this.runTask(nextJid, task).catch((err) =>
           logger.error(
@@ -332,16 +346,13 @@ export class GroupQueue {
             'Unhandled error in runTask (waiting)',
           ),
         );
-      } else if (state.pendingMessages) {
-        this.runForGroup(nextJid, 'drain').catch((err) =>
-          logger.error(
-            { groupJid: nextJid, err },
-            'Unhandled error in runForGroup (waiting)',
-          ),
-        );
       }
       // If neither pending, skip this group
     }
+  }
+
+  getActiveCount(): number {
+    return this.activeCount;
   }
 
   async shutdown(_gracePeriodMs: number): Promise<void> {

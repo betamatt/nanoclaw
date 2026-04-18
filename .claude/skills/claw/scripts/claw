@@ -270,6 +270,107 @@ def run_container(runtime: str, image: str, payload: dict,
         sys.exit(proc.returncode)
 
 
+# ── SDLC Status ──────────────────────────────────────────────────────────────
+
+STAGE_ORDER = [
+    'triage', 'plan', 'awaiting_approval', 'implement', 'review',
+    'review_flagged', 'validate', 'awaiting_merge', 'blocked', 'done', 'failed',
+]
+
+def sdlc_status(db: Path):
+    if not db.exists():
+        sys.exit("error: database not found")
+
+    conn = sqlite3.connect(db)
+
+    # Check if table exists
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='sdlc_issues'"
+    ).fetchall()]
+    if not tables:
+        print("SDLC pipeline not initialized (no issues tracked yet).")
+        conn.close()
+        return
+
+    # Repos
+    repos = [r[0] for r in conn.execute("SELECT DISTINCT repo FROM sdlc_issues ORDER BY repo").fetchall()]
+
+    # Stage counts
+    rows = conn.execute(
+        "SELECT current_stage, COUNT(*) FROM sdlc_issues GROUP BY current_stage"
+    ).fetchall()
+    stage_counts = dict(rows)
+
+    print(f"=== SDLC Pipeline ({', '.join(repos)}) ===\n")
+    for stage in STAGE_ORDER:
+        count = stage_counts.get(stage, 0)
+        if count > 0:
+            print(f"  {stage:<20} {count}")
+
+    total = sum(stage_counts.values())
+    print(f"  {'total':<20} {total}\n")
+
+    # Running containers
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}|{{.RunningFor}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        containers = [
+            line.split("|") for line in result.stdout.strip().split("\n")
+            if "nanoclaw-sdlc" in line
+        ]
+    except Exception:
+        containers = []
+
+    if containers:
+        print("Running:")
+        for name, age in containers:
+            # Extract issue number
+            m = re.search(r'-(\d+)-\d+$', name)
+            if m:
+                num = int(m.group(1))
+                row = conn.execute(
+                    "SELECT substr(issue_title, 1, 45), current_stage FROM sdlc_issues WHERE issue_number = ?",
+                    (num,),
+                ).fetchone()
+                title, stage = row if row else ("?", "?")
+                print(f"  #{num:<5} {stage:<20} {age:<16} {title}")
+        print()
+    else:
+        print("No containers running.\n")
+
+    multi = len(repos) > 1
+
+    # Active (non-terminal, non-waiting)
+    active = conn.execute(
+        "SELECT repo, issue_number, substr(issue_title, 1, 40), current_stage, retry_count "
+        "FROM sdlc_issues WHERE current_stage NOT IN ('done', 'failed', 'blocked', 'awaiting_approval', 'awaiting_merge') "
+        "ORDER BY repo, issue_number"
+    ).fetchall()
+    if active:
+        print("Active:")
+        for repo, num, title, stage, retries in active:
+            retry_str = f" (retry {retries})" if retries else ""
+            prefix = f"{repo}#" if multi else "#"
+            print(f"  {prefix}{num:<5} {stage:<20} {title}{retry_str}")
+        print()
+
+    # Failed
+    failed = conn.execute(
+        "SELECT repo, issue_number, substr(issue_title, 1, 40), retry_count "
+        "FROM sdlc_issues WHERE current_stage = 'failed' ORDER BY repo, issue_number"
+    ).fetchall()
+    if failed:
+        print("Failed:")
+        for repo, num, title, retries in failed:
+            prefix = f"{repo}#" if multi else "#"
+            print(f"  {prefix}{num:<5} {title} (retries: {retries})")
+        print()
+
+    conn.close()
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -287,6 +388,7 @@ def main():
                         help="Container runtime (default: auto-detect)")
     parser.add_argument("--image", default=IMAGE, help=f"Container image (default: {IMAGE})")
     parser.add_argument("--list-groups", action="store_true", help="List registered groups and exit")
+    parser.add_argument("--sdlc", action="store_true", help="Show SDLC pipeline status and exit")
     parser.add_argument("--raw", action="store_true", help="Print raw JSON output")
     parser.add_argument("--timeout", type=int, default=300, metavar="SECS",
                         help="Max seconds to wait for a response (default: 300)")
@@ -305,6 +407,10 @@ def main():
         for g in groups:
             main_tag = " [main]" if g["is_main"] else ""
             print(f"{g['name']:<35} {g['folder']:<30} {g['jid']}{main_tag}")
+        return
+
+    if args.sdlc:
+        sdlc_status(DB_PATH)
         return
 
     # Resolve prompt: --pipe reads stdin, optionally prepended with positional arg

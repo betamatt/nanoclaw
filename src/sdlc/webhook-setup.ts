@@ -8,6 +8,8 @@ import {
   SDLC_WEBHOOK_URL,
 } from './config.js';
 
+const REQUIRED_EVENTS = ['issues', 'issue_comment', 'pull_request', 'pull_request_review', 'pull_request_review_comment'];
+
 // Allow runtime override (e.g., from Tailscale Funnel)
 let runtimeWebhookUrl: string | null = null;
 
@@ -99,14 +101,14 @@ function ensureWebhookForRepo(
     // Ensure it has the right events and is active
     const needsUpdate =
       !match.active ||
-      !['issues', 'issue_comment', 'pull_request'].every((e) => match.events.includes(e));
+      !REQUIRED_EVENTS.every((e) => match.events.includes(e));
 
     if (needsUpdate) {
       execSync(
         `gh api repos/${repo}/hooks/${match.id} -X PATCH -f 'active=true' --input -`,
         {
           input: JSON.stringify({
-            events: ['issues', 'issue_comment', 'pull_request'],
+            events: REQUIRED_EVENTS,
             active: true,
           }),
           encoding: 'utf-8',
@@ -124,7 +126,7 @@ function ensureWebhookForRepo(
   const payload = JSON.stringify({
     name: 'web',
     active: true,
-    events: ['issues', 'issue_comment', 'pull_request'],
+    events: REQUIRED_EVENTS,
     config: {
       url: webhookUrl,
       content_type: 'json',

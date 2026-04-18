@@ -75,6 +75,15 @@ export function getSdlcIssue(
     .get(repo, issueNumber) as SdlcIssue | undefined;
 }
 
+export function getSdlcIssueByPr(
+  repo: string,
+  prNumber: number,
+): SdlcIssue | undefined {
+  return db
+    .prepare('SELECT * FROM sdlc_issues WHERE repo = ? AND pr_number = ?')
+    .get(repo, prNumber) as SdlcIssue | undefined;
+}
+
 export function updateSdlcStage(
   repo: string,
   issueNumber: number,
