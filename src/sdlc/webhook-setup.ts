@@ -8,7 +8,13 @@ import {
   SDLC_WEBHOOK_URL,
 } from './config.js';
 
-const REQUIRED_EVENTS = ['issues', 'issue_comment', 'pull_request', 'pull_request_review', 'pull_request_review_comment'];
+const REQUIRED_EVENTS = [
+  'issues',
+  'issue_comment',
+  'pull_request',
+  'pull_request_review',
+  'pull_request_review_comment',
+];
 
 // Allow runtime override (e.g., from Tailscale Funnel)
 let runtimeWebhookUrl: string | null = null;
@@ -100,8 +106,7 @@ function ensureWebhookForRepo(
   if (match) {
     // Ensure it has the right events and is active
     const needsUpdate =
-      !match.active ||
-      !REQUIRED_EVENTS.every((e) => match.events.includes(e));
+      !match.active || !REQUIRED_EVENTS.every((e) => match.events.includes(e));
 
     if (needsUpdate) {
       execSync(
@@ -186,6 +191,37 @@ const SDLC_LABELS = [
     name: 'sdlc:validated',
     color: '2ea44f',
     description: 'SDLC: PR validated against requirements',
+  },
+  {
+    name: 'sdlc:merge-ready',
+    color: '0e8a16',
+    description: 'SDLC: PR queued for merge (legacy)',
+  },
+  // New state machine labels
+  {
+    name: 'sdlc:plan-ready',
+    color: 'd4c5f9',
+    description: 'SDLC: Plan posted, awaiting human approval',
+  },
+  {
+    name: 'sdlc:plan-approved',
+    color: '0e8a16',
+    description: 'SDLC: Human approved the plan',
+  },
+  {
+    name: 'sdlc:implemented',
+    color: '1d76db',
+    description: 'SDLC: Implementation PR opened',
+  },
+  {
+    name: 'sdlc:awaiting-merge',
+    color: 'fbca04',
+    description: 'SDLC: Awaiting human sign-off on merge',
+  },
+  {
+    name: 'sdlc:feedback-required',
+    color: 'e4e669',
+    description: 'SDLC: Agent needs human input to proceed',
   },
   {
     name: 'sdlc:review-resolved',

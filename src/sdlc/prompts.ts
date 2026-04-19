@@ -489,6 +489,91 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
 - If CI is failing, validation should fail`;
 }
 
+export function mergePrompt(issue: SdlcIssue): string {
+  return `You are merging a validated pull request into main.
+
+## Issue Details
+- Repository: ${issue.repo}
+- Issue #${issue.issue_number}: ${issue.issue_title}
+- PR #${issue.pr_number}
+- Branch: ${issue.branch_name}
+
+## Your Working Directory
+The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_name}\`.
+
+## Instructions
+
+1. **Rebase onto latest main**:
+   \`\`\`bash
+   cd /workspace/extra/repo
+   git fetch origin main
+   git rebase origin/main
+   \`\`\`
+   If there are conflicts:
+   - Resolve them carefully — examine both sides and choose the correct resolution
+   - Run \`git rebase --continue\` after resolving each conflict
+   - If a conflict requires human judgment (ambiguous intent, architectural decision), stop and write a failure result explaining what decision is needed
+
+2. **Push the rebased branch**:
+   \`\`\`bash
+   git push --force-with-lease origin ${issue.branch_name}
+   \`\`\`
+
+3. **Wait for CI to pass**. Poll the PR checks:
+   \`\`\`bash
+   # Poll every 30 seconds, up to 15 minutes
+   for i in $(seq 1 30); do
+     STATUS=$(gh pr checks ${issue.pr_number} --json bucket --jq '[.[].bucket] | if all(. == "pass") then "pass" elif any(. == "fail") then "fail" else "pending" end' 2>/dev/null || echo "pending")
+     echo "Check $i: $STATUS"
+     if [ "$STATUS" = "pass" ]; then break; fi
+     if [ "$STATUS" = "fail" ]; then break; fi
+     sleep 30
+   done
+   \`\`\`
+
+4. **If CI fails**: Read the failure logs and attempt to fix:
+   \`\`\`bash
+   gh pr checks ${issue.pr_number} --json name,state,link --jq '.[] | select(.state == "FAILURE" or .state == "ERROR")'
+   \`\`\`
+   - Examine the failing test or build output
+   - Fix the issue in the code, commit, and push
+   - Wait for CI again (repeat step 3)
+   - If you cannot fix the failure after one attempt, write a failure result explaining the problem
+
+5. **If CI passes**: Merge the PR:
+   \`\`\`bash
+   gh pr merge ${issue.pr_number} --squash --delete-branch
+   \`\`\`
+
+6. **Write IPC result**:
+   \`\`\`bash
+   cat > /workspace/ipc/sdlc/result-$(date +%s%N).json << 'RESULT_EOF'
+   {"type":"sdlc_stage_result","issueNumber":${issue.issue_number},"repo":"${issue.repo}","stage":"merge","success":true,"metadata":{}}
+   RESULT_EOF
+   \`\`\`
+
+## On Failure
+
+If you cannot resolve conflicts or fix CI failures, write a failure result:
+\`\`\`bash
+cat > /workspace/ipc/sdlc/result-$(date +%s%N).json << RESULT_EOF
+{"type":"sdlc_stage_result","issueNumber":${issue.issue_number},"repo":"${issue.repo}","stage":"merge","success":false,"metadata":{"error":"<describe what went wrong and what human input is needed>"}}
+RESULT_EOF
+\`\`\`
+
+Also post a comment on the PR explaining the problem:
+\`\`\`bash
+gh pr comment ${issue.pr_number} --body "<explanation of what went wrong>"
+\`\`\`
+
+## Important
+- Resolve conflicts yourself unless the resolution requires a human decision
+- Only one PR is merged at a time — do not rush
+- **NEVER force push to main**
+- **NEVER add Co-Authored-By, Signed-off-by, or any attribution to Claude/Anthropic in commits.** Commit as the repo's git identity — it is already configured.
+- If the merge command fails, check if the PR has branch protection rules that prevent squash merge and try \`--rebase\` instead`;
+}
+
 export function getPromptForStage(stage: string, issue: SdlcIssue): string {
   switch (stage) {
     case 'triage':
@@ -501,6 +586,8 @@ export function getPromptForStage(stage: string, issue: SdlcIssue): string {
       return reviewPrompt(issue);
     case 'validate':
       return validatePrompt(issue);
+    case 'merge':
+      return mergePrompt(issue);
     default:
       throw new Error(`No prompt for stage: ${stage}`);
   }

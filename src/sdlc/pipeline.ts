@@ -6,7 +6,11 @@ import { DATA_DIR } from '../config.js';
 import { runContainerAgent } from '../container-runner.js';
 import { logger } from '../logger.js';
 import type { RegisteredGroup } from '../types.js';
-import { MAX_SDLC_RETRIES, SDLC_MAX_HEAVY_CONTAINERS, SDLC_WEBHOOK_URL } from './config.js';
+import {
+  MAX_SDLC_RETRIES,
+  SDLC_MAX_HEAVY_CONTAINERS,
+  SDLC_WEBHOOK_URL,
+} from './config.js';
 import {
   getAllSdlcIssues,
   getIssuesBlockedBy,
@@ -23,6 +27,7 @@ import {
   removeWorktree,
   switchWorktreeToBranch,
 } from './repo-manager.js';
+import { getPluginsCacheDir, syncPluginsForRepo } from './plugin-cache.js';
 import { startFunnel, stopFunnel } from './tailscale-funnel.js';
 import type {
   BlockerRef,
@@ -40,7 +45,7 @@ const STAGE_TRANSITIONS: Record<string, SdlcStage> = {
   plan: 'awaiting_approval',
   implement: 'review',
   review: 'validate',
-  validate: 'awaiting_merge',
+  validate: 'merge',
 };
 
 /** Stages that run a container agent */
@@ -50,10 +55,11 @@ const RUNNABLE_STAGES = new Set<SdlcStage>([
   'implement',
   'review',
   'validate',
+  'merge',
 ]);
 
 /** Heavy stages that are capped by SDLC_MAX_HEAVY_CONTAINERS */
-const HEAVY_STAGES = new Set<SdlcStage>(['implement', 'review', 'validate']);
+const HEAVY_STAGES = new Set<SdlcStage>(['implement', 'review', 'validate', 'merge']);
 
 function issueJid(repo: string, issueNumber: number): string {
   return `sdlc:${repo}#${issueNumber}`;
@@ -204,9 +210,37 @@ export class SdlcPipeline {
   private heavyActiveCount = 0;
   private deferredHeavyQueue: SdlcIssue[] = [];
   private heavyDrainTimer: ReturnType<typeof setInterval> | null = null;
+  private repoPlugins = new Map<string, string[]>(); // repo -> container plugin paths
+  private mergeActive = new Set<string>(); // repos with an active merge
+  private deferredMergeQueue: SdlcIssue[] = [];
 
   constructor(deps: SdlcPipelineDeps) {
     this.deps = deps;
+  }
+
+  /**
+   * Sync plugin cache for a repo and return container-relative plugin paths.
+   */
+  private syncPlugins(repo: string): string[] {
+    if (this.repoPlugins.has(repo)) return this.repoPlugins.get(repo)!;
+
+    try {
+      const hostPaths = syncPluginsForRepo(repo);
+      // Map host paths to container paths under /workspace/extra/plugins/
+      // (mount security prepends /workspace/extra/ to the containerPath)
+      const containerPaths = hostPaths.map(p => {
+        const name = path.basename(p);
+        return `/workspace/extra/plugins/${name}`;
+      });
+      this.repoPlugins.set(repo, containerPaths);
+      if (containerPaths.length > 0) {
+        logger.info({ repo, plugins: containerPaths }, 'Plugins synced for repo');
+      }
+      return containerPaths;
+    } catch (err) {
+      logger.warn({ repo, err }, 'Failed to sync plugins');
+      return [];
+    }
   }
 
   private async notify(text: string): Promise<void> {
@@ -331,14 +365,24 @@ export class SdlcPipeline {
     this.enqueueStage(updated);
   }
 
-  async handleFeedback(repo: string, issueNumber: number, feedbackText?: string): Promise<boolean> {
+  async handleFeedback(
+    repo: string,
+    issueNumber: number,
+    feedbackText?: string,
+  ): Promise<boolean> {
     const issue = getSdlcIssue(repo, issueNumber);
     if (!issue) return false;
 
     const stage = issue.current_stage;
 
     // Only act on feedback-responsive stages
-    const responsiveStages = new Set(['awaiting_approval', 'review_flagged', 'awaiting_merge', 'failed']);
+    const responsiveStages = new Set([
+      'awaiting_approval',
+      'review_flagged',
+      'awaiting_merge',
+      'merge',
+      'failed',
+    ]);
     if (!responsiveStages.has(stage)) {
       logger.debug(
         { repo, issueNumber, stage },
@@ -353,12 +397,31 @@ export class SdlcPipeline {
       const text = feedbackText.trim().toLowerCase();
       // Skip @mentions to other users (not the bot)
       if (/^@\w/.test(text) && !text.startsWith('@sdlc')) {
-        logger.debug({ repo, issueNumber }, 'Feedback ignored — directed at another user');
+        logger.debug(
+          { repo, issueNumber },
+          'Feedback ignored — directed at another user',
+        );
         return false;
       }
       // Skip very short non-actionable responses
-      if (['thanks', 'thank you', 'ty', 'ok', 'k', 'cool', 'nice', '👍', '🎉', '✅'].includes(text)) {
-        logger.debug({ repo, issueNumber }, 'Feedback ignored — non-actionable response');
+      if (
+        [
+          'thanks',
+          'thank you',
+          'ty',
+          'ok',
+          'k',
+          'cool',
+          'nice',
+          '👍',
+          '🎉',
+          '✅',
+        ].includes(text)
+      ) {
+        logger.debug(
+          { repo, issueNumber },
+          'Feedback ignored — non-actionable response',
+        );
         return false;
       }
     }
@@ -373,26 +436,39 @@ export class SdlcPipeline {
     let targetStage: SdlcStage;
 
     if (stage === 'awaiting_approval') {
-      logger.info({ repo, issueNumber }, 'Plan feedback received — re-planning');
+      logger.info(
+        { repo, issueNumber },
+        'Plan feedback received — re-planning',
+      );
       await this.notify(
         `SDLC: Feedback on plan for #${issueNumber} in ${repo} — re-planning`,
       );
       targetStage = 'plan';
     } else if (stage === 'review_flagged') {
-      logger.info({ repo, issueNumber }, 'Review feedback received — re-reviewing');
+      logger.info(
+        { repo, issueNumber },
+        'Review feedback received — re-reviewing',
+      );
       await this.notify(
         `SDLC: Feedback on review for #${issueNumber} in ${repo} — re-reviewing`,
       );
       targetStage = 'review';
-    } else if (stage === 'awaiting_merge') {
-      logger.info({ repo, issueNumber }, 'Merge feedback received — applying changes');
+    } else if (stage === 'awaiting_merge' || stage === 'merge') {
+      logger.info(
+        { repo, issueNumber },
+        'Merge feedback received — applying changes',
+      );
       await this.notify(
         `SDLC: Feedback on #${issueNumber} in ${repo} — applying requested changes`,
       );
       targetStage = 'review';
     } else if (stage === 'failed') {
-      const retryStage = meta.conflict_from_stage || meta.failed_at_stage || 'triage';
-      logger.info({ repo, issueNumber, retryStage }, 'Feedback on failed issue — retrying');
+      const retryStage =
+        meta.conflict_from_stage || meta.failed_at_stage || 'triage';
+      logger.info(
+        { repo, issueNumber, retryStage },
+        'Feedback on failed issue — retrying',
+      );
       await this.notify(
         `SDLC: Feedback on failed #${issueNumber} in ${repo} — retrying ${retryStage}`,
       );
@@ -612,12 +688,17 @@ export class SdlcPipeline {
    */
   private async rebaseInFlightBranches(repo: string): Promise<void> {
     const REBASE_STAGES: Set<SdlcStage> = new Set([
-      'review', 'review_flagged', 'validate', 'awaiting_merge',
+      'review',
+      'review_flagged',
+      'validate',
+      'awaiting_merge',
+      'merge',
     ]);
 
     const allIssues = getAllSdlcIssues();
     const candidates = allIssues.filter(
-      (i) => i.repo === repo && i.branch_name && REBASE_STAGES.has(i.current_stage),
+      (i) =>
+        i.repo === repo && i.branch_name && REBASE_STAGES.has(i.current_stage),
     );
 
     if (candidates.length === 0) return;
@@ -639,7 +720,11 @@ export class SdlcPipeline {
             stdio: 'pipe',
           });
           logger.info(
-            { repo, issueNumber: issue.issue_number, branch: issue.branch_name },
+            {
+              repo,
+              issueNumber: issue.issue_number,
+              branch: issue.branch_name,
+            },
             'Rebased and pushed branch',
           );
         } catch (err) {
@@ -689,9 +774,7 @@ export class SdlcPipeline {
       updateSdlcStage(repo, issueNumber, 'done');
       removeWorktree(repo, issueNumber);
 
-      await this.notify(
-        `SDLC: #${issueNumber} in ${repo} closed. Done.`,
-      );
+      await this.notify(`SDLC: #${issueNumber} in ${repo} closed. Done.`);
     }
 
     // Check if any blocked issues can advance
@@ -817,6 +900,16 @@ export class SdlcPipeline {
    * Recover in-progress issues on startup.
    */
   recoverInProgress(): void {
+    // Migrate legacy awaiting_merge issues to the active merge stage
+    const awaitingMerge = getSdlcIssuesByStage('awaiting_merge' as SdlcStage);
+    for (const issue of awaitingMerge) {
+      logger.info(
+        { repo: issue.repo, issueNumber: issue.issue_number },
+        'Migrating awaiting_merge → merge',
+      );
+      updateSdlcStage(issue.repo, issue.issue_number, 'merge', { retry_count: 0 });
+    }
+
     for (const stage of RUNNABLE_STAGES) {
       const issues = getSdlcIssuesByStage(stage);
       for (const issue of issues) {
@@ -906,7 +999,11 @@ export class SdlcPipeline {
         ghLabel(issue.repo, issue.issue_number, 'add', 'sdlc:blocked');
 
         logger.info(
-          { repo: issue.repo, issueNumber: issue.issue_number, subIssues: blockerList },
+          {
+            repo: issue.repo,
+            issueNumber: issue.issue_number,
+            subIssues: blockerList,
+          },
           'Parent issue blocked by open sub-issues',
         );
 
@@ -951,6 +1048,26 @@ export class SdlcPipeline {
       return;
     }
 
+    // After merge success: mark done, cleanup worktree, rebase in-flight branches
+    if (issue.current_stage === 'merge') {
+      updateSdlcStage(issue.repo, issue.issue_number, 'done', updates);
+      removeWorktree(issue.repo, issue.issue_number);
+      ghLabel(issue.repo, issue.issue_number, 'remove', 'sdlc:merge-ready');
+
+      logger.info(
+        { repo: issue.repo, issueNumber: issue.issue_number, prNumber: issue.pr_number },
+        'Merge complete — issue done',
+      );
+
+      await this.notify(
+        `SDLC: #${issue.issue_number} in ${issue.repo} — PR #${issue.pr_number} merged. Done.`,
+      );
+
+      // Rebase other in-flight branches onto the new main
+      await this.rebaseInFlightBranches(issue.repo);
+      return;
+    }
+
     updateSdlcStage(issue.repo, issue.issue_number, nextStage, updates);
 
     logger.info(
@@ -967,8 +1084,8 @@ export class SdlcPipeline {
       `SDLC: #${issue.issue_number} in ${issue.repo} — ${issue.current_stage} -> ${nextStage}`,
     );
 
+    // awaiting_merge is now legacy — merge stage is active
     if (nextStage === 'awaiting_merge') {
-      // Don't enqueue — wait for PR merge webhook
       return;
     }
 
@@ -986,6 +1103,28 @@ export class SdlcPipeline {
     issue: SdlcIssue,
     metadata?: Record<string, unknown>,
   ): Promise<void> {
+    // Merge failures go straight to review_flagged — the agent already tried to fix
+    if (issue.current_stage === 'merge') {
+      const reason = (metadata?.error as string) || 'Merge failed';
+      updateSdlcStage(issue.repo, issue.issue_number, 'review_flagged', {
+        retry_count: 0,
+        metadata: JSON.stringify({
+          ...JSON.parse(issue.metadata || '{}'),
+          merge_failure: reason,
+        }),
+      });
+      ghLabel(issue.repo, issue.issue_number, 'remove', 'sdlc:merge-ready');
+
+      logger.warn(
+        { repo: issue.repo, issueNumber: issue.issue_number, reason },
+        'Merge failed — moving to review_flagged',
+      );
+      await this.notify(
+        `SDLC: #${issue.issue_number} in ${issue.repo} — merge failed: ${reason}. Moved to review_flagged.`,
+      );
+      return;
+    }
+
     const retryCount = issue.retry_count + 1;
 
     if (retryCount <= MAX_SDLC_RETRIES) {
@@ -1041,6 +1180,16 @@ export class SdlcPipeline {
     const existing = this.deps.registeredGroups()[jid];
     if (existing) return;
 
+    const mounts: Array<{ hostPath: string; containerPath: string; readonly: boolean }> = [
+      { hostPath: wtPath, containerPath: 'repo', readonly: false },
+    ];
+
+    // Mount plugin cache if plugins are available
+    const pluginsCacheDir = getPluginsCacheDir();
+    if (fs.existsSync(pluginsCacheDir)) {
+      mounts.push({ hostPath: pluginsCacheDir, containerPath: 'plugins', readonly: true });
+    }
+
     this.deps.registerGroup(jid, {
       name: `SDLC: ${issue.repo}#${issue.issue_number}`,
       folder,
@@ -1048,14 +1197,8 @@ export class SdlcPipeline {
       added_at: new Date().toISOString(),
       requiresTrigger: false,
       containerConfig: {
-        timeout: 3600000, // 60 minutes for implementation
-        additionalMounts: [
-          {
-            hostPath: wtPath,
-            containerPath: 'repo',
-            readonly: false,
-          },
-        ],
+        timeout: 3600000,
+        additionalMounts: mounts,
       },
     });
   }
@@ -1065,10 +1208,31 @@ export class SdlcPipeline {
     if (!RUNNABLE_STAGES.has(stage)) return;
 
     const isHeavy = HEAVY_STAGES.has(stage);
+    const isMerge = stage === 'merge';
+
+    // Gate merges: only one merge per repo at a time
+    if (isMerge && this.mergeActive.has(issue.repo)) {
+      if (
+        !this.deferredMergeQueue.some(
+          (i) => i.repo === issue.repo && i.issue_number === issue.issue_number,
+        )
+      ) {
+        this.deferredMergeQueue.push(issue);
+        logger.info(
+          { repo: issue.repo, issueNumber: issue.issue_number, queued: this.deferredMergeQueue.length },
+          'Merge deferred — another merge active for this repo',
+        );
+      }
+      return;
+    }
 
     // Gate heavy stages to keep slots available for triage/plan/chat
     if (isHeavy && this.heavyActiveCount >= SDLC_MAX_HEAVY_CONTAINERS) {
-      if (!this.deferredHeavyQueue.some(i => i.repo === issue.repo && i.issue_number === issue.issue_number)) {
+      if (
+        !this.deferredHeavyQueue.some(
+          (i) => i.repo === issue.repo && i.issue_number === issue.issue_number,
+        )
+      ) {
         this.deferredHeavyQueue.push(issue);
         logger.info(
           {
@@ -1087,6 +1251,10 @@ export class SdlcPipeline {
     }
 
     if (isHeavy) this.heavyActiveCount++;
+    if (isMerge) {
+      this.mergeActive.add(issue.repo);
+      ghLabel(issue.repo, issue.issue_number, 'add', 'sdlc:merge-ready');
+    }
 
     const jid = issueJid(issue.repo, issue.issue_number);
     const folder = issueFolder(issue.repo, issue.issue_number);
@@ -1096,6 +1264,7 @@ export class SdlcPipeline {
     const taskId = `sdlc-${issue.repo}-${issue.issue_number}-${stage}-${Date.now()}`;
 
     const prompt = getPromptForStage(stage, issue);
+    const plugins = this.syncPlugins(issue.repo);
 
     this.deps.queue.enqueueTask(jid, taskId, async () => {
       try {
@@ -1121,6 +1290,7 @@ export class SdlcPipeline {
             isMain: false,
             isScheduledTask: true,
             assistantName: 'SDLC Agent',
+            plugins: plugins.length > 0 ? plugins : undefined,
           },
           (proc, containerName) =>
             this.deps.onProcess(jid, proc, containerName, folder),
@@ -1143,9 +1313,14 @@ export class SdlcPipeline {
           const m = JSON.parse(currentMeta.metadata);
           if (m.pending_feedback) {
             delete m.pending_feedback;
-            updateSdlcStage(issue.repo, issue.issue_number, currentMeta.current_stage, {
-              metadata: JSON.stringify(m),
-            });
+            updateSdlcStage(
+              issue.repo,
+              issue.issue_number,
+              currentMeta.current_stage,
+              {
+                metadata: JSON.stringify(m),
+              },
+            );
           }
         }
 
@@ -1171,6 +1346,10 @@ export class SdlcPipeline {
         if (isHeavy) {
           this.heavyActiveCount--;
           this.drainDeferredHeavy();
+        }
+        if (isMerge) {
+          this.mergeActive.delete(issue.repo);
+          this.drainDeferredMerge(issue.repo);
         }
       }
     });
@@ -1205,9 +1384,24 @@ export class SdlcPipeline {
 
   private ensureHeavyDrainTimer(): void {
     if (this.heavyDrainTimer) return;
-    // Periodic check in case a heavy container finishes without triggering drain
-    // (e.g. container killed externally)
     this.heavyDrainTimer = setInterval(() => this.drainDeferredHeavy(), 30_000);
+  }
+
+  private drainDeferredMerge(repo: string): void {
+    if (this.mergeActive.has(repo)) return;
+
+    const idx = this.deferredMergeQueue.findIndex((i) => i.repo === repo);
+    if (idx === -1) return;
+
+    const [deferred] = this.deferredMergeQueue.splice(idx, 1);
+    const current = getSdlcIssue(deferred.repo, deferred.issue_number);
+    if (current && current.current_stage === 'merge') {
+      logger.info(
+        { repo, issueNumber: current.issue_number },
+        'Draining deferred merge',
+      );
+      this.enqueueStage(current);
+    }
   }
 }
 

@@ -193,7 +193,9 @@ async function handleEvent(
 
     case 'issue_comment': {
       if (action !== 'created') break;
-      const comment = payload.comment as { id: number; body: string } | undefined;
+      const comment = payload.comment as
+        | { id: number; body: string }
+        | undefined;
       const issue = payload.issue as GitHubIssue | undefined;
       if (!comment || !issue) break;
 
@@ -220,7 +222,11 @@ async function handleEvent(
         await pipeline.handlePlanApproved(repo, sdlcIssueNumber);
         acted = true;
       } else if (!isAgentComment(comment.body)) {
-        acted = await pipeline.handleFeedback(repo, sdlcIssueNumber, comment.body);
+        acted = await pipeline.handleFeedback(
+          repo,
+          sdlcIssueNumber,
+          comment.body,
+        );
       }
 
       if (acted) ghReact(repo, comment.id);
@@ -240,7 +246,9 @@ async function handleEvent(
 
     case 'pull_request_review': {
       if (action !== 'submitted') break;
-      const review = payload.review as { body: string; state: string } | undefined;
+      const review = payload.review as
+        | { body: string; state: string }
+        | undefined;
       const pr = payload.pull_request as { number: number } | undefined;
       if (!review || !pr) break;
       if (isAgentComment(review.body || '')) break;
@@ -251,14 +259,20 @@ async function handleEvent(
       if (!prIssue) break;
 
       if (review.state === 'changes_requested' || review.body?.trim()) {
-        await pipeline.handleFeedback(repo, prIssue.issue_number, review.body || '');
+        await pipeline.handleFeedback(
+          repo,
+          prIssue.issue_number,
+          review.body || '',
+        );
       }
       break;
     }
 
     case 'pull_request_review_comment': {
       if (action !== 'created') break;
-      const comment = payload.comment as { id: number; body: string } | undefined;
+      const comment = payload.comment as
+        | { id: number; body: string }
+        | undefined;
       const pr = payload.pull_request as { number: number } | undefined;
       if (!comment || !pr) break;
       if (isAgentComment(comment.body)) break;
@@ -267,7 +281,11 @@ async function handleEvent(
       const prIssue2 = getByPr(repo, pr.number);
       if (!prIssue2) break;
 
-      const prActed = await pipeline.handleFeedback(repo, prIssue2.issue_number, comment.body);
+      const prActed = await pipeline.handleFeedback(
+        repo,
+        prIssue2.issue_number,
+        comment.body,
+      );
       if (prActed) {
         try {
           const ghEnv = readEnvFile(['GITHUB_TOKEN']);
@@ -278,7 +296,9 @@ async function handleEvent(
               { env: { ...process.env, GITHUB_TOKEN: token }, stdio: 'pipe' },
             );
           }
-        } catch { /* best-effort */ }
+        } catch {
+          /* best-effort */
+        }
       }
       break;
     }

@@ -63,8 +63,14 @@ export function createWorktree(
     if (!branch) {
       try {
         execSync('git fetch origin', { cwd: mainDir, stdio: 'pipe' });
-        execSync('git checkout --detach origin/main', { cwd: wtPath, stdio: 'pipe' });
-        logger.debug({ repo, issueNumber }, 'Updated existing worktree to latest origin/main');
+        execSync('git checkout --detach origin/main', {
+          cwd: wtPath,
+          stdio: 'pipe',
+        });
+        logger.debug(
+          { repo, issueNumber },
+          'Updated existing worktree to latest origin/main',
+        );
       } catch (err) {
         logger.warn({ repo, issueNumber, err }, 'Failed to update worktree');
       }

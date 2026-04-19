@@ -13,6 +13,7 @@ export type SdlcStage =
   | 'review_flagged'
   | 'validate'
   | 'awaiting_merge'
+  | 'merge'
   | 'done'
   | 'failed';
 

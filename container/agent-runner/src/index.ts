@@ -33,6 +33,7 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+  plugins?: string[]; // Absolute container paths to plugin directories
 }
 
 interface ContainerOutput {
@@ -474,6 +475,7 @@ async function runQuery(
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
+      plugins: containerInput.plugins?.map(p => ({ type: 'local' as const, path: p })),
       mcpServers: {
         nanoclaw: {
           command: 'node',
