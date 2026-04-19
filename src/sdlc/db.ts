@@ -1,6 +1,24 @@
 import type Database from 'better-sqlite3';
 
+import { logger } from '../logger.js';
+import { applyStateLabel } from './labels.js';
+import type { SdlcState } from './transitions.js';
 import type { BlockerRef, SdlcIssue, SdlcStage } from './types.js';
+
+/** Map old DB stages to new label states. Null means no label (terminal/internal). */
+const STAGE_TO_LABEL: Partial<Record<SdlcStage, SdlcState>> = {
+  triage: 'triage',
+  plan: 'triage', // plan is part of triage in the new model
+  blocked: 'blocked',
+  awaiting_approval: 'plan-ready',
+  implement: 'plan-approved',
+  review: 'review',
+  review_flagged: 'review', // review_flagged = review + feedback-required flag
+  validate: 'validate',
+  awaiting_merge: 'awaiting-merge',
+  merge: 'merge',
+  // done and failed have no label (closed or state+flag)
+};
 
 let db: Database.Database;
 
@@ -133,6 +151,34 @@ export function updateSdlcStage(
   db.prepare(
     `UPDATE sdlc_issues SET ${fields.join(', ')} WHERE repo = ? AND issue_number = ?`,
   ).run(...values);
+
+  // Dual-write: apply corresponding label on GitHub
+  const labelState = STAGE_TO_LABEL[stage];
+  if (labelState) {
+    const prStages = new Set(['review', 'review_flagged', 'validate', 'awaiting_merge', 'merge']);
+    const isPrStage = prStages.has(stage);
+
+    // For PR stages, we need the PR number to apply labels
+    let targetNumber = issueNumber;
+    if (isPrStage) {
+      const issue = getSdlcIssue(repo, issueNumber);
+      if (issue?.pr_number) {
+        targetNumber = issue.pr_number;
+      }
+    }
+
+    try {
+      applyStateLabel(repo, targetNumber, labelState);
+
+      // If entering review_flagged, also add the feedback flag
+      if (stage === 'review_flagged') {
+        const { addFlag } = require('./labels.js') as typeof import('./labels.js');
+        addFlag(repo, targetNumber, 'feedback-required');
+      }
+    } catch (err) {
+      logger.warn({ repo, issueNumber, stage, err }, 'Dual-write label failed (non-fatal)');
+    }
+  }
 }
 
 export function getSdlcIssuesByStage(stage: SdlcStage): SdlcIssue[] {
