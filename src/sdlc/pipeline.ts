@@ -59,7 +59,12 @@ const RUNNABLE_STAGES = new Set<SdlcStage>([
 ]);
 
 /** Heavy stages that are capped by SDLC_MAX_HEAVY_CONTAINERS */
-const HEAVY_STAGES = new Set<SdlcStage>(['implement', 'review', 'validate', 'merge']);
+const HEAVY_STAGES = new Set<SdlcStage>([
+  'implement',
+  'review',
+  'validate',
+  'merge',
+]);
 
 function issueJid(repo: string, issueNumber: number): string {
   return `sdlc:${repo}#${issueNumber}`;
@@ -228,13 +233,16 @@ export class SdlcPipeline {
       const hostPaths = syncPluginsForRepo(repo);
       // Map host paths to container paths under /workspace/extra/plugins/
       // (mount security prepends /workspace/extra/ to the containerPath)
-      const containerPaths = hostPaths.map(p => {
+      const containerPaths = hostPaths.map((p) => {
         const name = path.basename(p);
         return `/workspace/extra/plugins/${name}`;
       });
       this.repoPlugins.set(repo, containerPaths);
       if (containerPaths.length > 0) {
-        logger.info({ repo, plugins: containerPaths }, 'Plugins synced for repo');
+        logger.info(
+          { repo, plugins: containerPaths },
+          'Plugins synced for repo',
+        );
       }
       return containerPaths;
     } catch (err) {
@@ -532,6 +540,71 @@ export class SdlcPipeline {
     updateSdlcStage(repo, issueNumber, retryStage, { retry_count: 0 });
 
     const updated = getSdlcIssue(repo, issueNumber)!;
+    this.ensureGroup(updated);
+    this.enqueueStage(updated);
+  }
+
+  /**
+   * Handle human applying sdlc:merge label — enqueue the merge stage.
+   */
+  async handleMergeRequested(repo: string, prNumber: number): Promise<void> {
+    // Look up the SDLC issue by PR number
+    const { getSdlcIssueByPr } = await import('./db.js');
+    const issue = getSdlcIssueByPr(repo, prNumber);
+    if (!issue) {
+      logger.debug({ repo, prNumber }, 'Merge requested for unknown PR');
+      return;
+    }
+
+    if (issue.current_stage !== 'awaiting_merge' && issue.current_stage !== 'merge') {
+      logger.debug(
+        { repo, issueNumber: issue.issue_number, stage: issue.current_stage },
+        'Merge requested but not in awaiting_merge/merge stage',
+      );
+      return;
+    }
+
+    logger.info({ repo, issueNumber: issue.issue_number, prNumber }, 'Merge requested by human');
+    await this.notify(
+      `SDLC: Merge requested for #${issue.issue_number} in ${repo} — queuing PR #${prNumber}`,
+    );
+
+    updateSdlcStage(repo, issue.issue_number, 'merge', { retry_count: 0 });
+
+    const updated = getSdlcIssue(repo, issue.issue_number)!;
+    this.ensureGroup(updated);
+    this.enqueueStage(updated);
+  }
+
+  /**
+   * Handle removal of sdlc:feedback-required flag — re-run the current stage.
+   */
+  async handleFeedbackFlagRemoved(repo: string, number: number): Promise<void> {
+    // Could be an issue number or PR number
+    let issue = getSdlcIssue(repo, number);
+    if (!issue) {
+      const { getSdlcIssueByPr } = await import('./db.js');
+      const byPr = getSdlcIssueByPr(repo, number);
+      if (byPr) issue = byPr;
+    }
+    if (!issue) return;
+
+    const stage = issue.current_stage;
+    if (!RUNNABLE_STAGES.has(stage)) {
+      logger.debug({ repo, issueNumber: issue.issue_number, stage }, 'Flag removed but stage not runnable');
+      return;
+    }
+
+    logger.info(
+      { repo, issueNumber: issue.issue_number, stage },
+      'Feedback flag removed — re-running stage',
+    );
+    await this.notify(
+      `SDLC: Feedback resolved for #${issue.issue_number} in ${repo} — re-running ${stage}`,
+    );
+
+    updateSdlcStage(repo, issue.issue_number, stage, { retry_count: 0 });
+    const updated = getSdlcIssue(repo, issue.issue_number)!;
     this.ensureGroup(updated);
     this.enqueueStage(updated);
   }
@@ -907,7 +980,9 @@ export class SdlcPipeline {
         { repo: issue.repo, issueNumber: issue.issue_number },
         'Migrating awaiting_merge → merge',
       );
-      updateSdlcStage(issue.repo, issue.issue_number, 'merge', { retry_count: 0 });
+      updateSdlcStage(issue.repo, issue.issue_number, 'merge', {
+        retry_count: 0,
+      });
     }
 
     for (const stage of RUNNABLE_STAGES) {
@@ -1055,7 +1130,11 @@ export class SdlcPipeline {
       ghLabel(issue.repo, issue.issue_number, 'remove', 'sdlc:merge-ready');
 
       logger.info(
-        { repo: issue.repo, issueNumber: issue.issue_number, prNumber: issue.pr_number },
+        {
+          repo: issue.repo,
+          issueNumber: issue.issue_number,
+          prNumber: issue.pr_number,
+        },
         'Merge complete — issue done',
       );
 
@@ -1180,14 +1259,20 @@ export class SdlcPipeline {
     const existing = this.deps.registeredGroups()[jid];
     if (existing) return;
 
-    const mounts: Array<{ hostPath: string; containerPath: string; readonly: boolean }> = [
-      { hostPath: wtPath, containerPath: 'repo', readonly: false },
-    ];
+    const mounts: Array<{
+      hostPath: string;
+      containerPath: string;
+      readonly: boolean;
+    }> = [{ hostPath: wtPath, containerPath: 'repo', readonly: false }];
 
     // Mount plugin cache if plugins are available
     const pluginsCacheDir = getPluginsCacheDir();
     if (fs.existsSync(pluginsCacheDir)) {
-      mounts.push({ hostPath: pluginsCacheDir, containerPath: 'plugins', readonly: true });
+      mounts.push({
+        hostPath: pluginsCacheDir,
+        containerPath: 'plugins',
+        readonly: true,
+      });
     }
 
     this.deps.registerGroup(jid, {
@@ -1219,7 +1304,11 @@ export class SdlcPipeline {
       ) {
         this.deferredMergeQueue.push(issue);
         logger.info(
-          { repo: issue.repo, issueNumber: issue.issue_number, queued: this.deferredMergeQueue.length },
+          {
+            repo: issue.repo,
+            issueNumber: issue.issue_number,
+            queued: this.deferredMergeQueue.length,
+          },
           'Merge deferred — another merge active for this repo',
         );
       }

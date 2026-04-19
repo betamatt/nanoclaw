@@ -9,7 +9,15 @@ import {
 } from './config.js';
 import { execSync } from 'child_process';
 import { readEnvFile } from '../env.js';
+import { removeStateLabel } from './labels.js';
 import type { SdlcPipeline } from './pipeline.js';
+import {
+  FEEDBACK_FLAG_LABEL,
+  LEGAL_TRANSITIONS,
+  type SdlcState,
+  stateFromLabels,
+  validateTransition,
+} from './transitions.js';
 
 /** Add a thumbs-up reaction to a comment to acknowledge it. */
 function ghReact(repo: string, commentId: number): void {
@@ -144,6 +152,61 @@ function isPlanApproval(body: string): boolean {
   return APPROVAL_PATTERNS.some((p) => p.test(trimmed));
 }
 
+/**
+ * Determine if a GitHub actor is the agent (bot/app) or a human.
+ * GitHub Apps have [bot] suffix; the SDLC agent uses the same PAT as the user
+ * so we check if the event was triggered by a known bot login.
+ */
+function isAgentActor(sender: Record<string, unknown> | undefined): boolean {
+  if (!sender) return false;
+  const type = sender.type as string | undefined;
+  if (type === 'Bot') return true;
+  // If the actor login matches the token owner, it could be either.
+  // For now, label events from humans are the norm; agent applies labels via CLI.
+  // We'll treat all webhook label events as human-initiated unless type is Bot.
+  return false;
+}
+
+/**
+ * Handle a label guard check for sdlc:* state labels.
+ * Validates the transition and rolls back if invalid.
+ * Returns the new state if valid, null if invalid or not an sdlc label.
+ */
+function guardLabelTransition(
+  repo: string,
+  number: number,
+  appliedLabel: string,
+  currentLabels: Array<{ name: string }>,
+  sender: Record<string, unknown> | undefined,
+): SdlcState | null {
+  // Only guard sdlc:* state labels (not flags)
+  if (!appliedLabel.startsWith('sdlc:') || appliedLabel === FEEDBACK_FLAG_LABEL) {
+    return null;
+  }
+
+  const newState = appliedLabel.slice(5) as SdlcState;
+
+  // Check if this is actually a known state
+  if (!(newState in LEGAL_TRANSITIONS)) return null;
+
+  const currentState = stateFromLabels(
+    currentLabels.filter(l => l.name !== appliedLabel),
+  );
+  const actorIsAgent = isAgentActor(sender);
+
+  const error = validateTransition(currentState, newState, actorIsAgent);
+  if (error) {
+    logger.warn(
+      { repo, number, from: currentState, to: newState, error },
+      'Label guard: invalid transition — rolling back',
+    );
+    removeStateLabel(repo, number, newState);
+    return null;
+  }
+
+  return newState;
+}
+
 async function handleEvent(
   event: string,
   payload: Record<string, unknown>,
@@ -182,10 +245,31 @@ async function handleEvent(
         await pipeline.handleIssueEdited(repo, issue.number, issue.body || '');
       } else if (action === 'labeled') {
         const label = payload.label as GitHubLabel | undefined;
-        if (label?.name === 'sdlc:approve-plan') {
+        if (!label) break;
+
+        // New state machine: guard and dispatch sdlc:* labels
+        const sender = payload.sender as Record<string, unknown> | undefined;
+        const newState = guardLabelTransition(
+          repo, issue.number, label.name, issue.labels, sender,
+        );
+        if (newState === 'plan-approved') {
           await pipeline.handlePlanApproved(repo, issue.number);
-        } else if (label?.name === 'sdlc:review-resolved') {
+        } else if (newState === 'merge') {
+          // Human applied merge label on a PR (handled via issues API since PRs are issues)
+          await pipeline.handleMergeRequested(repo, issue.number);
+        }
+
+        // Legacy label support (will be removed after migration)
+        if (label.name === 'sdlc:approve-plan') {
+          await pipeline.handlePlanApproved(repo, issue.number);
+        } else if (label.name === 'sdlc:review-resolved') {
           await pipeline.handleReviewResolved(repo, issue.number);
+        }
+      } else if (action === 'unlabeled') {
+        // Flag removal: re-run the current stage
+        const label = payload.label as GitHubLabel | undefined;
+        if (label?.name === FEEDBACK_FLAG_LABEL) {
+          await pipeline.handleFeedbackFlagRemoved(repo, issue.number);
         }
       }
       break;
@@ -234,12 +318,29 @@ async function handleEvent(
     }
 
     case 'pull_request': {
-      if (action !== 'closed') break;
       const pr = payload.pull_request as
-        | { number: number; merged: boolean }
+        | { number: number; merged: boolean; labels?: GitHubLabel[] }
         | undefined;
-      if (pr?.merged) {
+      if (!pr) break;
+
+      if (action === 'closed' && pr.merged) {
         await pipeline.handlePrMerged(repo, pr.number);
+      } else if (action === 'labeled') {
+        const label = payload.label as GitHubLabel | undefined;
+        if (label && pr.labels) {
+          const sender = payload.sender as Record<string, unknown> | undefined;
+          const newState = guardLabelTransition(
+            repo, pr.number, label.name, pr.labels, sender,
+          );
+          if (newState === 'merge') {
+            await pipeline.handleMergeRequested(repo, pr.number);
+          }
+        }
+      } else if (action === 'unlabeled') {
+        const label = payload.label as GitHubLabel | undefined;
+        if (label?.name === FEEDBACK_FLAG_LABEL) {
+          await pipeline.handleFeedbackFlagRemoved(repo, pr.number);
+        }
       }
       break;
     }
