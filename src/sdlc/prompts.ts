@@ -386,6 +386,7 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
 - When in doubt, leave a comment rather than making a wrong fix
 - Inline comments on specific lines are more useful than vague PR comments
 - **If you flag items for human review (items_flagged > 0), the pipeline will pause** until a human resolves them. Be judicious — only flag things that genuinely need human input. Things you can fix yourself should be fixed, not flagged.
+- **NEVER close a PR** — if something is wrong, write a failure result instead
 - **NEVER add Co-Authored-By, Signed-off-by, or any attribution to Claude/Anthropic in commits.** Commit as the repo's git identity — it is already configured.
 - Do NOT approve or merge the PR`;
 }
@@ -486,7 +487,8 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
 ## Important
 - Compare against the ORIGINAL issue requirements, not just the plan
 - Be honest about gaps — do not rubber-stamp
-- If CI is failing, validation should fail`;
+- If CI is failing, validation should fail
+- **NEVER close a PR** — if validation fails, write a failure result instead`;
 }
 
 export function mergePrompt(issue: SdlcIssue): string {
@@ -570,6 +572,7 @@ gh pr comment ${issue.pr_number} --body "<explanation of what went wrong>"
 - Resolve conflicts yourself unless the resolution requires a human decision
 - Only one PR is merged at a time — do not rush
 - **NEVER force push to main**
+- **NEVER close a PR** — if merge fails, write a failure result instead
 - **NEVER add Co-Authored-By, Signed-off-by, or any attribution to Claude/Anthropic in commits.** Commit as the repo's git identity — it is already configured.
 - If the merge command fails, check if the PR has branch protection rules that prevent squash merge and try \`--rebase\` instead`;
 }

@@ -27,6 +27,7 @@ import {
   removeWorktree,
   switchWorktreeToBranch,
 } from './repo-manager.js';
+import { addFlag } from './labels.js';
 import { getPluginsCacheDir, syncPluginsForRepo } from './plugin-cache.js';
 import { startFunnel, stopFunnel } from './tailscale-funnel.js';
 import type {
@@ -383,18 +384,16 @@ export class SdlcPipeline {
 
     const stage = issue.current_stage;
 
-    // Only act on feedback-responsive stages
-    const responsiveStages = new Set([
-      'awaiting_approval',
-      'review_flagged',
-      'awaiting_merge',
-      'merge',
-      'failed',
-    ]);
-    if (!responsiveStages.has(stage)) {
+    // Feedback is accepted on human-gate stages and any stage with feedback-required flag
+    const humanGateStages = new Set(['awaiting_approval', 'awaiting_merge', 'merge']);
+    const isHumanGate = humanGateStages.has(stage);
+    // For non-gate stages, feedback only matters if the issue is paused (feedback-required)
+    // During migration, we accept feedback on any non-terminal stage
+    const terminalStages = new Set(['done']);
+    if (!isHumanGate && terminalStages.has(stage)) {
       logger.debug(
         { repo, issueNumber, stage },
-        'Feedback ignored — not in a feedback-responsive stage',
+        'Feedback ignored — terminal stage',
       );
       return false;
     }
@@ -444,46 +443,33 @@ export class SdlcPipeline {
     let targetStage: SdlcStage;
 
     if (stage === 'awaiting_approval') {
-      logger.info(
-        { repo, issueNumber },
-        'Plan feedback received — re-planning',
-      );
-      await this.notify(
-        `SDLC: Feedback on plan for #${issueNumber} in ${repo} — re-planning`,
-      );
+      // Re-run plan with feedback
       targetStage = 'plan';
-    } else if (stage === 'review_flagged') {
-      logger.info(
-        { repo, issueNumber },
-        'Review feedback received — re-reviewing',
-      );
-      await this.notify(
-        `SDLC: Feedback on review for #${issueNumber} in ${repo} — re-reviewing`,
-      );
-      targetStage = 'review';
     } else if (stage === 'awaiting_merge' || stage === 'merge') {
-      logger.info(
-        { repo, issueNumber },
-        'Merge feedback received — applying changes',
-      );
-      await this.notify(
-        `SDLC: Feedback on #${issueNumber} in ${repo} — applying requested changes`,
-      );
+      // Send to review to apply requested changes
       targetStage = 'review';
-    } else if (stage === 'failed') {
-      const retryStage =
-        meta.conflict_from_stage || meta.failed_at_stage || 'triage';
-      logger.info(
-        { repo, issueNumber, retryStage },
-        'Feedback on failed issue — retrying',
-      );
-      await this.notify(
-        `SDLC: Feedback on failed #${issueNumber} in ${repo} — retrying ${retryStage}`,
-      );
-      targetStage = retryStage;
+    } else if (RUNNABLE_STAGES.has(stage)) {
+      // Re-run the current stage (covers triage, plan, review, validate, merge with feedback flag)
+      targetStage = stage;
     } else {
       return false;
     }
+
+    logger.info(
+      { repo, issueNumber, from: stage, to: targetStage },
+      'Feedback received — re-running stage',
+    );
+    await this.notify(
+      `SDLC: Feedback on #${issueNumber} in ${repo} — re-running ${targetStage}`,
+    );
+
+    // Remove feedback-required flag if present
+    const targetNumber = issue.pr_number && ['review', 'validate', 'merge'].includes(stage)
+      ? issue.pr_number : issueNumber;
+    try {
+      const { removeFlag } = await import('./labels.js');
+      removeFlag(repo, targetNumber, 'feedback-required');
+    } catch { /* best effort */ }
 
     updateSdlcStage(repo, issueNumber, targetStage, {
       retry_count: 0,
@@ -520,22 +506,27 @@ export class SdlcPipeline {
       return;
     }
 
-    if (issue.current_stage !== 'failed') {
-      logger.debug(
-        { repo, issueNumber, stage: issue.current_stage },
-        'Retry ignored — not in failed state',
-      );
-      return;
+    // Re-run the current stage with reset retry count
+    // Works for both old `failed` state (legacy) and new feedback-required pattern
+    let retryStage: SdlcStage = issue.current_stage;
+    if (issue.current_stage === 'failed') {
+      // Legacy: recover the original stage from metadata
+      const meta = issue.metadata ? JSON.parse(issue.metadata) : {};
+      retryStage = (meta.failed_stage as SdlcStage) || 'triage';
     }
 
-    // Recover: look at metadata to find the stage that failed
-    const meta = issue.metadata ? JSON.parse(issue.metadata) : {};
-    const retryStage = (meta.failed_stage as SdlcStage) || 'triage';
-
-    logger.info({ repo, issueNumber, retryStage }, 'Retrying failed issue');
+    logger.info({ repo, issueNumber, retryStage }, 'Retrying issue');
     await this.notify(
       `SDLC: Retrying #${issueNumber} in ${repo} from ${retryStage}`,
     );
+
+    // Remove feedback-required flag
+    const targetNumber = issue.pr_number && ['review', 'validate', 'merge'].includes(retryStage)
+      ? issue.pr_number : issueNumber;
+    try {
+      const { removeFlag } = await import('./labels.js');
+      removeFlag(repo, targetNumber, 'feedback-required');
+    } catch { /* best effort */ }
 
     updateSdlcStage(repo, issueNumber, retryStage, { retry_count: 0 });
 
@@ -556,7 +547,10 @@ export class SdlcPipeline {
       return;
     }
 
-    if (issue.current_stage !== 'awaiting_merge' && issue.current_stage !== 'merge') {
+    if (
+      issue.current_stage !== 'awaiting_merge' &&
+      issue.current_stage !== 'merge'
+    ) {
       logger.debug(
         { repo, issueNumber: issue.issue_number, stage: issue.current_stage },
         'Merge requested but not in awaiting_merge/merge stage',
@@ -564,7 +558,10 @@ export class SdlcPipeline {
       return;
     }
 
-    logger.info({ repo, issueNumber: issue.issue_number, prNumber }, 'Merge requested by human');
+    logger.info(
+      { repo, issueNumber: issue.issue_number, prNumber },
+      'Merge requested by human',
+    );
     await this.notify(
       `SDLC: Merge requested for #${issue.issue_number} in ${repo} — queuing PR #${prNumber}`,
     );
@@ -591,7 +588,10 @@ export class SdlcPipeline {
 
     const stage = issue.current_stage;
     if (!RUNNABLE_STAGES.has(stage)) {
-      logger.debug({ repo, issueNumber: issue.issue_number, stage }, 'Flag removed but stage not runnable');
+      logger.debug(
+        { repo, issueNumber: issue.issue_number, stage },
+        'Flag removed but stage not runnable',
+      );
       return;
     }
 
@@ -616,10 +616,11 @@ export class SdlcPipeline {
       return;
     }
 
-    if (issue.current_stage !== 'review_flagged') {
+    // Accept from both old review_flagged state and new review + feedback-required
+    if (issue.current_stage !== 'review_flagged' && issue.current_stage !== 'review') {
       logger.debug(
         { repo, issueNumber, stage: issue.current_stage },
-        'Review resolved ignored — not awaiting review',
+        'Review resolved ignored — not in review',
       );
       return;
     }
@@ -631,6 +632,14 @@ export class SdlcPipeline {
     await this.notify(
       `SDLC: Review resolved for #${issueNumber} in ${repo} — starting validation`,
     );
+
+    // Remove feedback-required flag
+    if (issue.pr_number) {
+      try {
+        const { removeFlag } = await import('./labels.js');
+        removeFlag(repo, issue.pr_number, 'feedback-required');
+      } catch { /* best effort */ }
+    }
 
     updateSdlcStage(repo, issueNumber, 'validate', { retry_count: 0 });
 
@@ -1089,18 +1098,16 @@ export class SdlcPipeline {
       }
     }
 
-    // After review, if items were flagged for human, pause until resolved
+    // After review, if items were flagged for human, stay in review with feedback flag
     if (
       issue.current_stage === 'review' &&
       metadata?.items_flagged &&
       (metadata.items_flagged as number) > 0
     ) {
-      updateSdlcStage(
-        issue.repo,
-        issue.issue_number,
-        'review_flagged',
-        updates,
-      );
+      updateSdlcStage(issue.repo, issue.issue_number, 'review', updates);
+
+      const targetNumber = this.getTargetNumber(issue);
+      addFlag(issue.repo, targetNumber, 'feedback-required');
 
       logger.info(
         {
@@ -1108,17 +1115,17 @@ export class SdlcPipeline {
           issueNumber: issue.issue_number,
           itemsFlagged: metadata.items_flagged,
         },
-        'Review flagged items for human — pausing pipeline',
+        'Review flagged items for human — adding feedback-required',
       );
 
       ghComment(
         issue.repo,
         issue.issue_number,
-        `Code review flagged ${metadata.items_flagged} item(s) for human review on PR #${issue.pr_number}. Pipeline paused.\n\nAdd the \`sdlc:review-resolved\` label or comment \`/sdlc review resolved\` to continue to validation.`,
+        `Code review flagged ${metadata.items_flagged} item(s) for human review on PR #${issue.pr_number}. Pipeline paused.\n\nRemove \`sdlc:feedback-required\` label or comment to continue.`,
       );
 
       await this.notify(
-        `SDLC: #${issue.issue_number} in ${issue.repo} — review flagged ${metadata.items_flagged} item(s) for human. Paused until resolved.`,
+        `SDLC: #${issue.issue_number} in ${issue.repo} — review flagged ${metadata.items_flagged} item(s) for human. sdlc:feedback-required added.`,
       );
       return;
     }
@@ -1182,24 +1189,26 @@ export class SdlcPipeline {
     issue: SdlcIssue,
     metadata?: Record<string, unknown>,
   ): Promise<void> {
-    // Merge failures go straight to review_flagged — the agent already tried to fix
+    // Merge failures: stay in merge with feedback-required flag (preserves queue position)
     if (issue.current_stage === 'merge') {
       const reason = (metadata?.error as string) || 'Merge failed';
-      updateSdlcStage(issue.repo, issue.issue_number, 'review_flagged', {
+      updateSdlcStage(issue.repo, issue.issue_number, 'merge', {
         retry_count: 0,
         metadata: JSON.stringify({
           ...JSON.parse(issue.metadata || '{}'),
           merge_failure: reason,
         }),
       });
-      ghLabel(issue.repo, issue.issue_number, 'remove', 'sdlc:merge-ready');
+
+      const targetNumber = this.getTargetNumber(issue);
+      addFlag(issue.repo, targetNumber, 'feedback-required');
 
       logger.warn(
         { repo: issue.repo, issueNumber: issue.issue_number, reason },
-        'Merge failed — moving to review_flagged',
+        'Merge failed — feedback-required added',
       );
       await this.notify(
-        `SDLC: #${issue.issue_number} in ${issue.repo} — merge failed: ${reason}. Moved to review_flagged.`,
+        `SDLC: #${issue.issue_number} in ${issue.repo} — merge failed: ${reason}. sdlc:feedback-required added.`,
       );
       return;
     }
@@ -1226,16 +1235,21 @@ export class SdlcPipeline {
       return;
     }
 
-    // Max retries exhausted — mark as failed
+    // Max retries exhausted — stay in current stage, add feedback-required flag
     const reason =
       (metadata?.error as string) || 'Stage failed after maximum retries';
 
-    updateSdlcStage(issue.repo, issue.issue_number, 'failed', {
+    // Store error in metadata but keep the current stage
+    updateSdlcStage(issue.repo, issue.issue_number, issue.current_stage, {
       metadata: JSON.stringify({
-        failed_stage: issue.current_stage,
-        error: reason,
+        ...JSON.parse(issue.metadata || '{}'),
+        last_error: reason,
       }),
     });
+
+    // Add feedback-required flag — blocks advance until human clears it
+    const targetNumber = this.getTargetNumber(issue);
+    addFlag(issue.repo, targetNumber, 'feedback-required');
 
     logger.error(
       {
@@ -1243,21 +1257,26 @@ export class SdlcPipeline {
         issueNumber: issue.issue_number,
         stage: issue.current_stage,
       },
-      'SDLC issue failed after max retries',
+      'SDLC issue needs feedback after max retries',
     );
 
     await this.notify(
-      `SDLC: #${issue.issue_number} in ${issue.repo} FAILED at ${issue.current_stage} — comment \`/sdlc retry\` on the issue to retry`,
+      `SDLC: #${issue.issue_number} in ${issue.repo} needs help at ${issue.current_stage} — sdlc:feedback-required added`,
     );
+  }
+
+  /** Get the GitHub number to apply labels to (PR number for PR stages, issue number otherwise) */
+  private getTargetNumber(issue: SdlcIssue): number {
+    const prStages = new Set(['review', 'review_flagged', 'validate', 'awaiting_merge', 'merge']);
+    return prStages.has(issue.current_stage) && issue.pr_number
+      ? issue.pr_number
+      : issue.issue_number;
   }
 
   private ensureGroup(issue: SdlcIssue): void {
     const jid = issueJid(issue.repo, issue.issue_number);
     const folder = issueFolder(issue.repo, issue.issue_number);
     const wtPath = getWorktreePath(issue.repo, issue.issue_number);
-
-    const existing = this.deps.registeredGroups()[jid];
-    if (existing) return;
 
     const mounts: Array<{
       hostPath: string;

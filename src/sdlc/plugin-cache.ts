@@ -6,7 +6,10 @@ import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { SDLC_REPOS_BASE } from './config.js';
 
-const PLUGIN_CACHE_DIR = path.join(path.dirname(SDLC_REPOS_BASE), 'plugin-cache');
+const PLUGIN_CACHE_DIR = path.join(
+  path.dirname(SDLC_REPOS_BASE),
+  'plugin-cache',
+);
 const MARKETPLACES_DIR = path.join(PLUGIN_CACHE_DIR, 'marketplaces');
 const PLUGINS_DIR = path.join(PLUGIN_CACHE_DIR, 'plugins');
 
@@ -55,7 +58,10 @@ function marketplaceUrl(source: MarketplaceSource): string | null {
 /**
  * Clone or pull a marketplace into the cache. Returns the local path.
  */
-function ensureMarketplace(name: string, source: MarketplaceSource): string | null {
+function ensureMarketplace(
+  name: string,
+  source: MarketplaceSource,
+): string | null {
   const url = marketplaceUrl(source);
   if (!url) {
     if (source.source === 'directory' && source.path) {
@@ -75,7 +81,10 @@ function ensureMarketplace(name: string, source: MarketplaceSource): string | nu
   // Inject token into HTTPS URLs for private repos
   let cloneUrl = url;
   if (token && url.startsWith('https://github.com/')) {
-    cloneUrl = url.replace('https://github.com/', `https://x-access-token:${token}@github.com/`);
+    cloneUrl = url.replace(
+      'https://github.com/',
+      `https://x-access-token:${token}@github.com/`,
+    );
   }
 
   if (fs.existsSync(path.join(dir, '.git'))) {
@@ -87,7 +96,10 @@ function ensureMarketplace(name: string, source: MarketplaceSource): string | nu
     }
   } else {
     try {
-      execSync(`git clone --depth 1 ${cloneUrl} ${dir}`, { stdio: 'pipe', env });
+      execSync(`git clone --depth 1 ${cloneUrl} ${dir}`, {
+        stdio: 'pipe',
+        env,
+      });
       logger.info({ name, url }, 'Marketplace cloned');
     } catch (err) {
       logger.error({ name, url, err }, 'Failed to clone marketplace');
@@ -102,7 +114,10 @@ function ensureMarketplace(name: string, source: MarketplaceSource): string | nu
  * Find a plugin within a marketplace directory.
  * Marketplace layout: each plugin is a subdirectory with a plugin.json or package.json.
  */
-function findPluginInMarketplace(marketplaceDir: string, pluginName: string): string | null {
+function findPluginInMarketplace(
+  marketplaceDir: string,
+  pluginName: string,
+): string | null {
   // Check direct subdirectory
   const pluginDir = path.join(marketplaceDir, pluginName);
   if (fs.existsSync(pluginDir) && fs.statSync(pluginDir).isDirectory()) {
@@ -111,7 +126,10 @@ function findPluginInMarketplace(marketplaceDir: string, pluginName: string): st
 
   // Check plugins/ subdirectory
   const pluginsSubdir = path.join(marketplaceDir, 'plugins', pluginName);
-  if (fs.existsSync(pluginsSubdir) && fs.statSync(pluginsSubdir).isDirectory()) {
+  if (
+    fs.existsSync(pluginsSubdir) &&
+    fs.statSync(pluginsSubdir).isDirectory()
+  ) {
     return pluginsSubdir;
   }
 
@@ -135,7 +153,9 @@ export function syncPluginsForRepo(repo: string): string[] {
 
   // Clone/update all marketplaces
   const marketplaceDirs: Record<string, string> = {};
-  for (const [name, config] of Object.entries(settings.extraKnownMarketplaces)) {
+  for (const [name, config] of Object.entries(
+    settings.extraKnownMarketplaces,
+  )) {
     const dir = ensureMarketplace(name, config.source);
     if (dir) marketplaceDirs[name] = dir;
   }
@@ -147,7 +167,10 @@ export function syncPluginsForRepo(repo: string): string[] {
     // Parse "plugin-name@marketplace-name"
     const atIdx = pluginRef.lastIndexOf('@');
     if (atIdx === -1) {
-      logger.warn({ pluginRef }, 'Invalid plugin reference — missing @marketplace');
+      logger.warn(
+        { pluginRef },
+        'Invalid plugin reference — missing @marketplace',
+      );
       continue;
     }
 
@@ -162,15 +185,18 @@ export function syncPluginsForRepo(repo: string): string[] {
 
     const pluginDir = findPluginInMarketplace(marketplaceDir, pluginName);
     if (!pluginDir) {
-      logger.warn({ pluginRef, marketplaceDir }, 'Plugin not found in marketplace');
+      logger.warn(
+        { pluginRef, marketplaceDir },
+        'Plugin not found in marketplace',
+      );
       continue;
     }
 
-    // Symlink into plugins cache for easy mounting
-    const cacheLink = path.join(PLUGINS_DIR, pluginName);
+    // Copy into plugins cache for mounting (Docker doesn't follow symlinks)
+    const cacheCopy = path.join(PLUGINS_DIR, pluginName);
     try {
-      if (fs.existsSync(cacheLink)) fs.rmSync(cacheLink, { recursive: true });
-      fs.symlinkSync(pluginDir, cacheLink);
+      if (fs.existsSync(cacheCopy)) fs.rmSync(cacheCopy, { recursive: true });
+      fs.cpSync(pluginDir, cacheCopy, { recursive: true });
     } catch {
       // Fall back to using the direct path
     }

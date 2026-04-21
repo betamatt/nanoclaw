@@ -436,6 +436,10 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  if (containerInput.plugins?.length) {
+    log(`Plugins: ${JSON.stringify(containerInput.plugins)}`);
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -507,7 +511,10 @@ async function runQuery(
 
     if (message.type === 'system' && message.subtype === 'init') {
       newSessionId = message.session_id;
+      const initMsg = message as Record<string, unknown>;
       log(`Session initialized: ${newSessionId}`);
+      if (initMsg.plugins) log(`Loaded plugins: ${JSON.stringify(initMsg.plugins)}`);
+      if (initMsg.plugin_errors) log(`Plugin errors: ${JSON.stringify(initMsg.plugin_errors)}`);
     }
 
     if (

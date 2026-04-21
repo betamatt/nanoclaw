@@ -30,22 +30,28 @@ These are permitted for SDLC automation (overriding `agent-github` restrictions)
 
 ## NOT Allowed
 
-These remain forbidden — they are destructive or require human decision:
+These are forbidden — they are destructive or require human decision:
 
-- `gh pr merge` / `gh pr close` / `gh pr reopen`
-- `gh issue create` / `gh issue close` / `gh issue reopen`
+- `gh pr close` — **NEVER close a PR under any circumstances**
+- `gh issue close` / `gh issue reopen`
 - `gh release create` / `gh release delete`
 - `gh repo delete` / `gh repo rename`
-- `git push --force` / `git push --force-with-lease`
+- `git push --force` (bare force push — `--force-with-lease` is OK after rebase)
 - Any `gh api -X DELETE` call
 - Modifying branch protection rules
+
+## Conditionally Allowed
+
+These are only allowed when your prompt explicitly instructs you to use them:
+
+- `gh pr merge` — only in the **merge** stage prompt
+- `git push --force-with-lease` — only after a rebase, when the prompt says to
 
 ## Rules
 
 - **Always** work in `/workspace/extra/repo`
 - **Always** write an IPC result file when your stage completes
-- **Never** force push
-- **Never** merge or close PRs — humans do that
+- **NEVER close a PR** — if something is wrong, write a failure result and let the pipeline handle it
 - **Never** delete branches
 - **Never** add `Co-Authored-By`, `Signed-off-by`, or any Claude/Anthropic attribution to commits. The git identity is pre-configured — just commit normally.
 - Post clear, structured comments on issues and PRs
