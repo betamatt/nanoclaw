@@ -24,6 +24,8 @@ let db: Database.Database;
 
 export function initSdlcSchema(database: Database.Database): void {
   db = database;
+
+  // Legacy table — kept for backward compatibility during migration
   database.exec(`
     CREATE TABLE IF NOT EXISTS sdlc_issues (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,6 +53,34 @@ export function initSdlcSchema(database: Database.Database): void {
     database.exec(`ALTER TABLE sdlc_issues ADD COLUMN blocked_by TEXT`);
   } catch {
     /* column already exists */
+  }
+
+  // New slim cache table — labels are the source of truth for state
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS sdlc_cache (
+      repo TEXT NOT NULL,
+      issue_number INTEGER NOT NULL,
+      branch_name TEXT,
+      pr_number INTEGER,
+      retry_count INTEGER DEFAULT 0,
+      metadata TEXT,
+      updated_at TEXT NOT NULL,
+      UNIQUE(repo, issue_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_sdlc_cache_repo_issue ON sdlc_cache(repo, issue_number);
+    CREATE INDEX IF NOT EXISTS idx_sdlc_cache_pr ON sdlc_cache(repo, pr_number);
+  `);
+
+  // Migrate data from old table to new cache if cache is empty
+  const cacheCount = database.prepare('SELECT COUNT(*) as n FROM sdlc_cache').get() as { n: number };
+  const oldCount = database.prepare('SELECT COUNT(*) as n FROM sdlc_issues').get() as { n: number };
+  if (cacheCount.n === 0 && oldCount.n > 0) {
+    database.exec(`
+      INSERT OR IGNORE INTO sdlc_cache (repo, issue_number, branch_name, pr_number, retry_count, metadata, updated_at)
+      SELECT repo, issue_number, branch_name, pr_number, retry_count, metadata, updated_at
+      FROM sdlc_issues
+    `);
+    logger.info({ migrated: oldCount.n }, 'Migrated sdlc_issues → sdlc_cache');
   }
 }
 
@@ -155,7 +185,13 @@ export function updateSdlcStage(
   // Dual-write: apply corresponding label on GitHub
   const labelState = STAGE_TO_LABEL[stage];
   if (labelState) {
-    const prStages = new Set(['review', 'review_flagged', 'validate', 'awaiting_merge', 'merge']);
+    const prStages = new Set([
+      'review',
+      'review_flagged',
+      'validate',
+      'awaiting_merge',
+      'merge',
+    ]);
     const isPrStage = prStages.has(stage);
 
     // For PR stages, we need the PR number to apply labels
@@ -172,11 +208,15 @@ export function updateSdlcStage(
 
       // If entering review_flagged, also add the feedback flag
       if (stage === 'review_flagged') {
-        const { addFlag } = require('./labels.js') as typeof import('./labels.js');
+        const { addFlag } =
+          require('./labels.js') as typeof import('./labels.js');
         addFlag(repo, targetNumber, 'feedback-required');
       }
     } catch (err) {
-      logger.warn({ repo, issueNumber, stage, err }, 'Dual-write label failed (non-fatal)');
+      logger.warn(
+        { repo, issueNumber, stage, err },
+        'Dual-write label failed (non-fatal)',
+      );
     }
   }
 }
@@ -216,4 +256,75 @@ export function getIssuesBlockedBy(
          )`,
     )
     .all(repo, issueNumber) as SdlcIssue[];
+}
+
+// ── Slim cache operations ──────────────────────────────────────────────────
+
+export interface SdlcCacheEntry {
+  repo: string;
+  issue_number: number;
+  branch_name: string | null;
+  pr_number: number | null;
+  retry_count: number;
+  metadata: string | null;
+  updated_at: string;
+}
+
+export function getCache(repo: string, issueNumber: number): SdlcCacheEntry | undefined {
+  return db
+    .prepare('SELECT * FROM sdlc_cache WHERE repo = ? AND issue_number = ?')
+    .get(repo, issueNumber) as SdlcCacheEntry | undefined;
+}
+
+export function getCacheByPr(repo: string, prNumber: number): SdlcCacheEntry | undefined {
+  return db
+    .prepare('SELECT * FROM sdlc_cache WHERE repo = ? AND pr_number = ?')
+    .get(repo, prNumber) as SdlcCacheEntry | undefined;
+}
+
+export function upsertCache(entry: Partial<SdlcCacheEntry> & { repo: string; issue_number: number }): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO sdlc_cache (repo, issue_number, branch_name, pr_number, retry_count, metadata, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(repo, issue_number) DO UPDATE SET
+       branch_name = COALESCE(excluded.branch_name, branch_name),
+       pr_number = COALESCE(excluded.pr_number, pr_number),
+       retry_count = COALESCE(excluded.retry_count, retry_count),
+       metadata = COALESCE(excluded.metadata, metadata),
+       updated_at = excluded.updated_at`,
+  ).run(
+    entry.repo,
+    entry.issue_number,
+    entry.branch_name ?? null,
+    entry.pr_number ?? null,
+    entry.retry_count ?? 0,
+    entry.metadata ?? null,
+    now,
+  );
+}
+
+export function updateCache(
+  repo: string,
+  issueNumber: number,
+  updates: Partial<Pick<SdlcCacheEntry, 'branch_name' | 'pr_number' | 'retry_count' | 'metadata'>>,
+): void {
+  const fields: string[] = ['updated_at = ?'];
+  const values: unknown[] = [new Date().toISOString()];
+
+  if (updates.branch_name !== undefined) { fields.push('branch_name = ?'); values.push(updates.branch_name); }
+  if (updates.pr_number !== undefined) { fields.push('pr_number = ?'); values.push(updates.pr_number); }
+  if (updates.retry_count !== undefined) { fields.push('retry_count = ?'); values.push(updates.retry_count); }
+  if (updates.metadata !== undefined) { fields.push('metadata = ?'); values.push(updates.metadata); }
+
+  values.push(repo, issueNumber);
+  db.prepare(`UPDATE sdlc_cache SET ${fields.join(', ')} WHERE repo = ? AND issue_number = ?`).run(...values);
+}
+
+export function deleteCache(repo: string, issueNumber: number): void {
+  db.prepare('DELETE FROM sdlc_cache WHERE repo = ? AND issue_number = ?').run(repo, issueNumber);
+}
+
+export function getAllCache(): SdlcCacheEntry[] {
+  return db.prepare('SELECT * FROM sdlc_cache ORDER BY updated_at DESC').all() as SdlcCacheEntry[];
 }
