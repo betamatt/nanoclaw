@@ -72,8 +72,12 @@ export function initSdlcSchema(database: Database.Database): void {
   `);
 
   // Migrate data from old table to new cache if cache is empty
-  const cacheCount = database.prepare('SELECT COUNT(*) as n FROM sdlc_cache').get() as { n: number };
-  const oldCount = database.prepare('SELECT COUNT(*) as n FROM sdlc_issues').get() as { n: number };
+  const cacheCount = database
+    .prepare('SELECT COUNT(*) as n FROM sdlc_cache')
+    .get() as { n: number };
+  const oldCount = database
+    .prepare('SELECT COUNT(*) as n FROM sdlc_issues')
+    .get() as { n: number };
   if (cacheCount.n === 0 && oldCount.n > 0) {
     database.exec(`
       INSERT OR IGNORE INTO sdlc_cache (repo, issue_number, branch_name, pr_number, retry_count, metadata, updated_at)
@@ -270,19 +274,27 @@ export interface SdlcCacheEntry {
   updated_at: string;
 }
 
-export function getCache(repo: string, issueNumber: number): SdlcCacheEntry | undefined {
+export function getCache(
+  repo: string,
+  issueNumber: number,
+): SdlcCacheEntry | undefined {
   return db
     .prepare('SELECT * FROM sdlc_cache WHERE repo = ? AND issue_number = ?')
     .get(repo, issueNumber) as SdlcCacheEntry | undefined;
 }
 
-export function getCacheByPr(repo: string, prNumber: number): SdlcCacheEntry | undefined {
+export function getCacheByPr(
+  repo: string,
+  prNumber: number,
+): SdlcCacheEntry | undefined {
   return db
     .prepare('SELECT * FROM sdlc_cache WHERE repo = ? AND pr_number = ?')
     .get(repo, prNumber) as SdlcCacheEntry | undefined;
 }
 
-export function upsertCache(entry: Partial<SdlcCacheEntry> & { repo: string; issue_number: number }): void {
+export function upsertCache(
+  entry: Partial<SdlcCacheEntry> & { repo: string; issue_number: number },
+): void {
   const now = new Date().toISOString();
   db.prepare(
     `INSERT INTO sdlc_cache (repo, issue_number, branch_name, pr_number, retry_count, metadata, updated_at)
@@ -307,24 +319,48 @@ export function upsertCache(entry: Partial<SdlcCacheEntry> & { repo: string; iss
 export function updateCache(
   repo: string,
   issueNumber: number,
-  updates: Partial<Pick<SdlcCacheEntry, 'branch_name' | 'pr_number' | 'retry_count' | 'metadata'>>,
+  updates: Partial<
+    Pick<
+      SdlcCacheEntry,
+      'branch_name' | 'pr_number' | 'retry_count' | 'metadata'
+    >
+  >,
 ): void {
   const fields: string[] = ['updated_at = ?'];
   const values: unknown[] = [new Date().toISOString()];
 
-  if (updates.branch_name !== undefined) { fields.push('branch_name = ?'); values.push(updates.branch_name); }
-  if (updates.pr_number !== undefined) { fields.push('pr_number = ?'); values.push(updates.pr_number); }
-  if (updates.retry_count !== undefined) { fields.push('retry_count = ?'); values.push(updates.retry_count); }
-  if (updates.metadata !== undefined) { fields.push('metadata = ?'); values.push(updates.metadata); }
+  if (updates.branch_name !== undefined) {
+    fields.push('branch_name = ?');
+    values.push(updates.branch_name);
+  }
+  if (updates.pr_number !== undefined) {
+    fields.push('pr_number = ?');
+    values.push(updates.pr_number);
+  }
+  if (updates.retry_count !== undefined) {
+    fields.push('retry_count = ?');
+    values.push(updates.retry_count);
+  }
+  if (updates.metadata !== undefined) {
+    fields.push('metadata = ?');
+    values.push(updates.metadata);
+  }
 
   values.push(repo, issueNumber);
-  db.prepare(`UPDATE sdlc_cache SET ${fields.join(', ')} WHERE repo = ? AND issue_number = ?`).run(...values);
+  db.prepare(
+    `UPDATE sdlc_cache SET ${fields.join(', ')} WHERE repo = ? AND issue_number = ?`,
+  ).run(...values);
 }
 
 export function deleteCache(repo: string, issueNumber: number): void {
-  db.prepare('DELETE FROM sdlc_cache WHERE repo = ? AND issue_number = ?').run(repo, issueNumber);
+  db.prepare('DELETE FROM sdlc_cache WHERE repo = ? AND issue_number = ?').run(
+    repo,
+    issueNumber,
+  );
 }
 
 export function getAllCache(): SdlcCacheEntry[] {
-  return db.prepare('SELECT * FROM sdlc_cache ORDER BY updated_at DESC').all() as SdlcCacheEntry[];
+  return db
+    .prepare('SELECT * FROM sdlc_cache ORDER BY updated_at DESC')
+    .all() as SdlcCacheEntry[];
 }

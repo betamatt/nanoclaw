@@ -44,6 +44,7 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+  plugins?: string[]; // Absolute container paths to plugin directories
 }
 
 export interface ContainerOutput {

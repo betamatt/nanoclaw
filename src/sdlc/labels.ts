@@ -17,7 +17,10 @@ import {
 function ghEnv(): Record<string, string> {
   const env = readEnvFile(['GITHUB_TOKEN']);
   const token = env.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
-  return { ...process.env, ...(token ? { GITHUB_TOKEN: token } : {}) } as Record<string, string>;
+  return {
+    ...process.env,
+    ...(token ? { GITHUB_TOKEN: token } : {}),
+  } as Record<string, string>;
 }
 
 /**
@@ -31,7 +34,7 @@ export function readState(repo: string, number: number): SdlcState | null {
       { encoding: 'utf-8', env: ghEnv(), stdio: ['pipe', 'pipe', 'pipe'] },
     );
     const names: string[] = JSON.parse(result);
-    return stateFromLabels(names.map(name => ({ name })));
+    return stateFromLabels(names.map((name) => ({ name })));
   } catch {
     return null;
   }
@@ -41,7 +44,11 @@ export function readState(repo: string, number: number): SdlcState | null {
  * Apply a new state label to an issue or PR.
  * Atomically strips all other sdlc:* state labels and flag labels.
  */
-export function applyStateLabel(repo: string, number: number, newState: SdlcState): void {
+export function applyStateLabel(
+  repo: string,
+  number: number,
+  newState: SdlcState,
+): void {
   const env = ghEnv();
   const labelToAdd = `sdlc:${newState}`;
 
@@ -59,19 +66,24 @@ export function applyStateLabel(repo: string, number: number, newState: SdlcStat
 
   // Compute new label set: remove all sdlc:* state and flag labels, add new state
   const sdlcLabels = new Set([...ALL_STATE_LABELS, FEEDBACK_FLAG_LABEL]);
-  const kept = currentLabels.filter(l => !sdlcLabels.has(l));
+  const kept = currentLabels.filter((l) => !sdlcLabels.has(l));
   kept.push(labelToAdd);
 
   // Set labels atomically via PUT (replaces entire label set)
   try {
     const payload = JSON.stringify({ labels: kept });
-    execSync(
-      `gh api repos/${repo}/issues/${number}/labels -X PUT --input -`,
-      { input: payload, encoding: 'utf-8', env, stdio: ['pipe', 'pipe', 'pipe'] },
-    );
+    execSync(`gh api repos/${repo}/issues/${number}/labels -X PUT --input -`, {
+      input: payload,
+      encoding: 'utf-8',
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     logger.info({ repo, number, state: newState }, 'State label applied');
   } catch (err) {
-    logger.error({ repo, number, state: newState, err }, 'Failed to apply state label');
+    logger.error(
+      { repo, number, state: newState, err },
+      'Failed to apply state label',
+    );
   }
 }
 
@@ -110,7 +122,11 @@ export function removeFlag(repo: string, number: number, flag: SdlcFlag): void {
 /**
  * Remove a state label from an issue or PR (used for rollback on invalid transitions).
  */
-export function removeStateLabel(repo: string, number: number, state: SdlcState): void {
+export function removeStateLabel(
+  repo: string,
+  number: number,
+  state: SdlcState,
+): void {
   const label = `sdlc:${state}`;
   try {
     execSync(

@@ -385,7 +385,11 @@ export class SdlcPipeline {
     const stage = issue.current_stage;
 
     // Feedback is accepted on human-gate stages and any stage with feedback-required flag
-    const humanGateStages = new Set(['awaiting_approval', 'awaiting_merge', 'merge']);
+    const humanGateStages = new Set([
+      'awaiting_approval',
+      'awaiting_merge',
+      'merge',
+    ]);
     const isHumanGate = humanGateStages.has(stage);
     // For non-gate stages, feedback only matters if the issue is paused (feedback-required)
     // During migration, we accept feedback on any non-terminal stage
@@ -464,12 +468,16 @@ export class SdlcPipeline {
     );
 
     // Remove feedback-required flag if present
-    const targetNumber = issue.pr_number && ['review', 'validate', 'merge'].includes(stage)
-      ? issue.pr_number : issueNumber;
+    const targetNumber =
+      issue.pr_number && ['review', 'validate', 'merge'].includes(stage)
+        ? issue.pr_number
+        : issueNumber;
     try {
       const { removeFlag } = await import('./labels.js');
       removeFlag(repo, targetNumber, 'feedback-required');
-    } catch { /* best effort */ }
+    } catch {
+      /* best effort */
+    }
 
     updateSdlcStage(repo, issueNumber, targetStage, {
       retry_count: 0,
@@ -521,12 +529,16 @@ export class SdlcPipeline {
     );
 
     // Remove feedback-required flag
-    const targetNumber = issue.pr_number && ['review', 'validate', 'merge'].includes(retryStage)
-      ? issue.pr_number : issueNumber;
+    const targetNumber =
+      issue.pr_number && ['review', 'validate', 'merge'].includes(retryStage)
+        ? issue.pr_number
+        : issueNumber;
     try {
       const { removeFlag } = await import('./labels.js');
       removeFlag(repo, targetNumber, 'feedback-required');
-    } catch { /* best effort */ }
+    } catch {
+      /* best effort */
+    }
 
     updateSdlcStage(repo, issueNumber, retryStage, { retry_count: 0 });
 
@@ -617,7 +629,10 @@ export class SdlcPipeline {
     }
 
     // Accept from both old review_flagged state and new review + feedback-required
-    if (issue.current_stage !== 'review_flagged' && issue.current_stage !== 'review') {
+    if (
+      issue.current_stage !== 'review_flagged' &&
+      issue.current_stage !== 'review'
+    ) {
       logger.debug(
         { repo, issueNumber, stage: issue.current_stage },
         'Review resolved ignored — not in review',
@@ -638,7 +653,9 @@ export class SdlcPipeline {
       try {
         const { removeFlag } = await import('./labels.js');
         removeFlag(repo, issue.pr_number, 'feedback-required');
-      } catch { /* best effort */ }
+      } catch {
+        /* best effort */
+      }
     }
 
     updateSdlcStage(repo, issueNumber, 'validate', { retry_count: 0 });
@@ -1267,7 +1284,13 @@ export class SdlcPipeline {
 
   /** Get the GitHub number to apply labels to (PR number for PR stages, issue number otherwise) */
   private getTargetNumber(issue: SdlcIssue): number {
-    const prStages = new Set(['review', 'review_flagged', 'validate', 'awaiting_merge', 'merge']);
+    const prStages = new Set([
+      'review',
+      'review_flagged',
+      'validate',
+      'awaiting_merge',
+      'merge',
+    ]);
     return prStages.has(issue.current_stage) && issue.pr_number
       ? issue.pr_number
       : issue.issue_number;

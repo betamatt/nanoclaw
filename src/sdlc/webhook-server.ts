@@ -180,7 +180,10 @@ function guardLabelTransition(
   sender: Record<string, unknown> | undefined,
 ): SdlcState | null {
   // Only guard sdlc:* state labels (not flags)
-  if (!appliedLabel.startsWith('sdlc:') || appliedLabel === FEEDBACK_FLAG_LABEL) {
+  if (
+    !appliedLabel.startsWith('sdlc:') ||
+    appliedLabel === FEEDBACK_FLAG_LABEL
+  ) {
     return null;
   }
 
@@ -190,18 +193,18 @@ function guardLabelTransition(
   if (!(newState in LEGAL_TRANSITIONS)) return null;
 
   const currentState = stateFromLabels(
-    currentLabels.filter(l => l.name !== appliedLabel),
+    currentLabels.filter((l) => l.name !== appliedLabel),
   );
   const actorIsAgent = isAgentActor(sender);
 
+  // Validate but don't rollback — log only during migration period.
+  // Humans need to be able to rescue stuck issues by applying any label.
   const error = validateTransition(currentState, newState, actorIsAgent);
   if (error) {
-    logger.warn(
+    logger.info(
       { repo, number, from: currentState, to: newState, error },
-      'Label guard: invalid transition — rolling back',
+      'Label guard: transition would be invalid (allowing during migration)',
     );
-    removeStateLabel(repo, number, newState);
-    return null;
   }
 
   return newState;
@@ -250,7 +253,11 @@ async function handleEvent(
         // New state machine: guard and dispatch sdlc:* labels
         const sender = payload.sender as Record<string, unknown> | undefined;
         const newState = guardLabelTransition(
-          repo, issue.number, label.name, issue.labels, sender,
+          repo,
+          issue.number,
+          label.name,
+          issue.labels,
+          sender,
         );
         if (newState === 'plan-approved') {
           await pipeline.handlePlanApproved(repo, issue.number);
@@ -330,7 +337,11 @@ async function handleEvent(
         if (label && pr.labels) {
           const sender = payload.sender as Record<string, unknown> | undefined;
           const newState = guardLabelTransition(
-            repo, pr.number, label.name, pr.labels, sender,
+            repo,
+            pr.number,
+            label.name,
+            pr.labels,
+            sender,
           );
           if (newState === 'merge') {
             await pipeline.handleMergeRequested(repo, pr.number);
