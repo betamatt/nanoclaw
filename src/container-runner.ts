@@ -258,7 +258,7 @@ async function buildContainerArgs(
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
   const onecliApplied = await onecli.applyContainerConfig(args, {
     addHostMapping: false, // Nanoclaw already handles host gateway
-    agent: agentIdentifier,
+    // Don't pass agent identifier — OneCLI v1.14+ uses default agent config
   });
   if (onecliApplied) {
     logger.info({ containerName }, 'OneCLI gateway config applied');

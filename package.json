@@ -21,7 +21,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@onecli-sh/sdk": "^0.2.0",
+    "@onecli-sh/sdk": "^0.3.1",
     "@slack/bolt": "^4.3.0",
     "@slack/types": "^2.15.0",
     "@whiskeysockets/baileys": "^6.17.16",
