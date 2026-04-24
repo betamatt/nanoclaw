@@ -136,7 +136,7 @@ The repository is mounted at /workspace/extra/repo. Explore the codebase to unde
    <your detailed plan in markdown>
 
    ---
-   *A human must add the \`sdlc:approve-plan\` label to proceed to implementation.*
+   *A human must add the \`sdlc:plan-approved\` label to proceed to implementation.*
    *Automated planning by SDLC pipeline*"
    \`\`\`
 
@@ -465,7 +465,7 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
 
 8. **If validation passes**, add the validated label:
    \`\`\`bash
-   gh issue edit ${issue.issue_number} --add-label "sdlc:validated"
+   gh issue edit ${issue.issue_number} --add-label "sdlc:awaiting-merge"
    \`\`\`
 
 9. **Set commit status to reflect the verdict**:
@@ -476,18 +476,40 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
    gh api repos/${issue.repo}/statuses/$SHA -X POST -f state=<success|failure> -f context="sdlc/validate" -f description="Validation <PASS|FAIL>: <brief reason>"
    \`\`\`
 
-10. **Write IPC result**:
+10. **Assess risk level**. Classify the PR as \`"low"\` or \`"high"\` risk:
+
+   **Low risk** (all must be true):
+   - No database schema or migration changes
+   - No config file changes (CI, deploy, build configs)
+   - No dependency additions or version changes
+   - Primarily adds new code rather than modifying existing code
+   - Diff is under ~300 lines of non-test code
+   - No breaking API or interface changes
+   - Tests cover the changes adequately
+
+   **High risk** (any one is enough):
+   - Modifies existing core logic or shared interfaces
+   - Changes database schemas, migrations, or data formats
+   - Adds/changes dependencies
+   - Large diff (300+ lines of non-test code)
+   - Touches configuration, CI, or deployment files
+   - Could break other consumers or downstream code
+
+   Low-risk PRs will be merged automatically. High-risk PRs will wait for human sign-off.
+
+11. **Write IPC result** (include risk assessment):
    \`\`\`bash
    cat > /workspace/ipc/sdlc/result-$(date +%s%N).json << 'RESULT_EOF'
-   {"type":"sdlc_stage_result","issueNumber":${issue.issue_number},"repo":"${issue.repo}","stage":"validate","success":true,"metadata":{"verdict":"pass"}}
+   {"type":"sdlc_stage_result","issueNumber":${issue.issue_number},"repo":"${issue.repo}","stage":"validate","success":true,"metadata":{"verdict":"pass","risk":"low"}}
    RESULT_EOF
    \`\`\`
-   If validation fails, set \`"success":false\` and include the reason.
+   If validation fails, set \`"success":false\` and include the reason. Always include \`"risk":"low"\` or \`"risk":"high"\`.
 
 ## Important
 - Compare against the ORIGINAL issue requirements, not just the plan
 - Be honest about gaps — do not rubber-stamp
 - If CI is failing, validation should fail
+- Be conservative with risk: when in doubt, mark high
 - **NEVER close a PR** — if validation fails, write a failure result instead`;
 }
 

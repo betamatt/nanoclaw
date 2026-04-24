@@ -266,12 +266,6 @@ async function handleEvent(
           await pipeline.handleMergeRequested(repo, issue.number);
         }
 
-        // Legacy label support (will be removed after migration)
-        if (label.name === 'sdlc:approve-plan') {
-          await pipeline.handlePlanApproved(repo, issue.number);
-        } else if (label.name === 'sdlc:review-resolved') {
-          await pipeline.handleReviewResolved(repo, issue.number);
-        }
       } else if (action === 'unlabeled') {
         // Flag removal: re-run the current stage
         const label = payload.label as GitHubLabel | undefined;

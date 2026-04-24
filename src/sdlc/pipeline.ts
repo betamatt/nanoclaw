@@ -17,6 +17,7 @@ import {
   getAllSdlcIssues,
   getIssuesBlockedBy,
   getSdlcIssue,
+  getSdlcIssueByPr,
   getSdlcIssuesByStage,
   updateSdlcStage,
   upsertSdlcIssue,
@@ -48,7 +49,7 @@ const STAGE_TRANSITIONS: Record<string, SdlcStage> = {
   plan: 'awaiting_approval',
   implement: 'review',
   review: 'validate',
-  validate: 'merge',
+  validate: 'awaiting_merge',
 };
 
 /** Stages that run a container agent */
@@ -326,7 +327,7 @@ export class SdlcPipeline {
     );
 
     // Add the approval label for visibility (may already exist if triggered by label)
-    ghLabel(repo, issueNumber, 'add', 'sdlc:approve-plan');
+    ghLabel(repo, issueNumber, 'add', 'sdlc:plan-approved');
 
     // Check for open sub-issues — parent waits for all sub-issues to complete
     const openSubIssues = getOpenSubIssues(repo, issueNumber);
@@ -1048,7 +1049,7 @@ export class SdlcPipeline {
       const label = `sdlc:${labelState}`;
       try {
         const result = execSync(
-          `gh search issues --repo ${repo} --label "${label}" --state open --json number,title --jq '.[] | "\\(.number)\\t\\(.title)"'`,
+          `gh api "repos/${repo}/issues?labels=${encodeURIComponent(label)}&state=open&per_page=100" --jq '.[] | "\\(.number)\\t\\(.title)"'`,
           {
             encoding: 'utf-8',
             env: { ...process.env, GITHUB_TOKEN: token },
@@ -1065,7 +1066,18 @@ export class SdlcPipeline {
           const title = titleParts.join('\t');
 
           // Ensure cache entry exists
-          const existing = getSdlcIssue(repo, num);
+          // For PR states, the number from search is the PR number, not the issue number.
+          // Look up by PR number first, then by issue number.
+          let existing = getSdlcIssue(repo, num);
+          let issueNum = num;
+          if (!existing) {
+            const byPr = getSdlcIssueByPr(repo, num);
+            if (byPr) {
+              existing = byPr;
+              issueNum = byPr.issue_number;
+            }
+          }
+
           if (!existing) {
             // New to the pipeline — create a DB entry
             upsertSdlcIssue({
@@ -1086,7 +1098,7 @@ export class SdlcPipeline {
             });
           } else if (existing.current_stage !== dbStage) {
             // Label disagrees with DB — trust the label
-            updateSdlcStage(repo, num, dbStage, { retry_count: 0 });
+            updateSdlcStage(repo, issueNum, dbStage, { retry_count: 0 });
           }
 
           // Skip feedback-required flagged issues
@@ -1112,9 +1124,9 @@ export class SdlcPipeline {
           }
 
           if (RUNNABLE_STAGES.has(dbStage)) {
-            const issue = getSdlcIssue(repo, num)!;
+            const issue = getSdlcIssue(repo, issueNum)!;
             logger.info(
-              { repo, issueNumber: num, stage: labelState },
+              { repo, issueNumber: issueNum, prNumber: issueNum !== num ? num : undefined, stage: labelState },
               'Recovering from GitHub label',
             );
             this.ensureGroup(issue);
@@ -1257,7 +1269,7 @@ export class SdlcPipeline {
     if (issue.current_stage === 'merge') {
       updateSdlcStage(issue.repo, issue.issue_number, 'done', updates);
       removeWorktree(issue.repo, issue.issue_number);
-      ghLabel(issue.repo, issue.issue_number, 'remove', 'sdlc:merge-ready');
+      ghLabel(issue.repo, issue.issue_number, 'remove', 'sdlc:merge');
 
       logger.info(
         {
@@ -1293,8 +1305,22 @@ export class SdlcPipeline {
       `SDLC: #${issue.issue_number} in ${issue.repo} — ${issue.current_stage} -> ${nextStage}`,
     );
 
-    // awaiting_merge is now legacy — merge stage is active
+    // After validation: low-risk PRs go straight to merge, high-risk wait for human
     if (nextStage === 'awaiting_merge') {
+      if (metadata?.risk === 'low') {
+        logger.info(
+          { repo: issue.repo, issueNumber: issue.issue_number },
+          'Low-risk PR — auto-advancing to merge',
+        );
+        await this.notify(
+          `SDLC: #${issue.issue_number} in ${issue.repo} — low-risk, auto-merging`,
+        );
+        updateSdlcStage(issue.repo, issue.issue_number, 'merge', { retry_count: 0 });
+        const mergeIssue = getSdlcIssue(issue.repo, issue.issue_number)!;
+        this.ensureGroup(mergeIssue);
+        this.enqueueStage(mergeIssue);
+      }
+      // High-risk: don't enqueue — wait for human to apply sdlc:merge label
       return;
     }
 
@@ -1548,7 +1574,7 @@ export class SdlcPipeline {
     if (isHeavy) this.heavyActiveCount++;
     if (isMerge) {
       this.mergeActive.add(issue.repo);
-      ghLabel(issue.repo, issue.issue_number, 'add', 'sdlc:merge-ready');
+      ghLabel(issue.repo, issue.issue_number, 'add', 'sdlc:merge');
     }
 
     const jid = issueJid(issue.repo, issue.issue_number);

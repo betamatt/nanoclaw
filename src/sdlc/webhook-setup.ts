@@ -183,22 +183,6 @@ const SDLC_LABELS = [
     description: 'SDLC: Implementation plan is ready for review',
   },
   {
-    name: 'sdlc:approve-plan',
-    color: '006b75',
-    description: 'SDLC: Plan approved — proceed to implementation',
-  },
-  {
-    name: 'sdlc:validated',
-    color: '2ea44f',
-    description: 'SDLC: PR validated against requirements',
-  },
-  {
-    name: 'sdlc:merge-ready',
-    color: '0e8a16',
-    description: 'SDLC: PR queued for merge (legacy)',
-  },
-  // New state machine labels
-  {
     name: 'sdlc:plan-ready',
     color: 'd4c5f9',
     description: 'SDLC: Plan posted, awaiting human approval',
@@ -224,19 +208,9 @@ const SDLC_LABELS = [
     description: 'SDLC: Agent needs human input to proceed',
   },
   {
-    name: 'sdlc:review-resolved',
-    color: '0e8a16',
-    description: 'SDLC: Review items resolved — proceed to validation',
-  },
-  {
     name: 'sdlc:blocked',
     color: 'fbca04',
     description: 'SDLC: Issue blocked by dependencies',
-  },
-  {
-    name: 'sdlc:failed',
-    color: 'b60205',
-    description: 'SDLC: Pipeline stage failed',
   },
 ];
 
