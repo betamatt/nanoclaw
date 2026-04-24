@@ -1045,11 +1045,14 @@ export class SdlcPipeline {
       merge: 'merge',
     };
 
+    const isPrState = new Set(['review', 'validate', 'awaiting-merge', 'merge']);
+
     for (const [labelState, dbStage] of Object.entries(labelToStage)) {
       const label = `sdlc:${labelState}`;
       try {
+        // Include pull_request field to distinguish PRs from issues
         const result = execSync(
-          `gh api "repos/${repo}/issues?labels=${encodeURIComponent(label)}&state=open&per_page=100" --jq '.[] | "\\(.number)\\t\\(.title)"'`,
+          `gh api "repos/${repo}/issues?labels=${encodeURIComponent(label)}&state=open&per_page=100" --jq '.[] | "\\(.number)\\t\\(.pull_request // ""  | if . == "" then "issue" else "pr" end)\\t\\(.title)"'`,
           {
             encoding: 'utf-8',
             env: { ...process.env, GITHUB_TOKEN: token },
@@ -1060,18 +1063,41 @@ export class SdlcPipeline {
         if (!result) continue;
 
         for (const line of result.split('\n')) {
-          const [numStr, ...titleParts] = line.split('\t');
+          const [numStr, typeStr, ...titleParts] = line.split('\t');
           const num = parseInt(numStr, 10);
           if (isNaN(num)) continue;
           const title = titleParts.join('\t');
+          const isPr = typeStr === 'pr';
 
-          // Ensure cache entry exists
-          // For PR states, the number from search is the PR number, not the issue number.
-          // Look up by PR number first, then by issue number.
-          let existing = getSdlcIssue(repo, num);
+          // For PR states, resolve the linked issue number
           let issueNum = num;
-          if (!existing) {
+          let prNum: number | null = null;
+
+          if (isPr && isPrState.has(labelState)) {
+            prNum = num;
+            // Try DB lookup by PR number first
             const byPr = getSdlcIssueByPr(repo, num);
+            if (byPr) {
+              issueNum = byPr.issue_number;
+            } else {
+              // Extract linked issue from PR body (Resolves #N, Closes #N)
+              try {
+                const body = execSync(
+                  `gh pr view ${num} --repo ${repo} --json body --jq .body`,
+                  { encoding: 'utf-8', env: { ...process.env, GITHUB_TOKEN: token }, stdio: ['pipe', 'pipe', 'pipe'] },
+                ).trim();
+                const match = body.match(/(?:Resolves|Closes|Fixes)\s+#(\d+)/i);
+                if (match) {
+                  issueNum = parseInt(match[1], 10);
+                }
+              } catch { /* use PR number as fallback */ }
+            }
+          }
+
+          // Look up existing entry
+          let existing = getSdlcIssue(repo, issueNum);
+          if (!existing && prNum) {
+            const byPr = getSdlcIssueByPr(repo, prNum);
             if (byPr) {
               existing = byPr;
               issueNum = byPr.issue_number;
@@ -1082,23 +1108,28 @@ export class SdlcPipeline {
             // New to the pipeline — create a DB entry
             upsertSdlcIssue({
               repo,
-              issue_number: num,
+              issue_number: issueNum,
               current_stage: dbStage,
               issue_title: title,
               issue_body: null,
               issue_labels: null,
               classification: null,
               branch_name: null,
-              pr_number: null,
+              pr_number: prNum,
               retry_count: 0,
               blocked_by: null,
               metadata: null,
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
             });
-          } else if (existing.current_stage !== dbStage) {
-            // Label disagrees with DB — trust the label
-            updateSdlcStage(repo, issueNum, dbStage, { retry_count: 0 });
+          } else {
+            // Update stage if label disagrees, and ensure PR number is set
+            const updates: Record<string, unknown> = {};
+            if (existing.current_stage !== dbStage) updates.retry_count = 0;
+            if (prNum && !existing.pr_number) updates.pr_number = prNum;
+            if (existing.current_stage !== dbStage || Object.keys(updates).length > 0) {
+              updateSdlcStage(repo, issueNum, existing.current_stage !== dbStage ? dbStage : existing.current_stage, updates);
+            }
           }
 
           // Skip feedback-required flagged issues
@@ -1126,7 +1157,12 @@ export class SdlcPipeline {
           if (RUNNABLE_STAGES.has(dbStage)) {
             const issue = getSdlcIssue(repo, issueNum)!;
             logger.info(
-              { repo, issueNumber: issueNum, prNumber: issueNum !== num ? num : undefined, stage: labelState },
+              {
+                repo,
+                issueNumber: issueNum,
+                prNumber: issueNum !== num ? num : undefined,
+                stage: labelState,
+              },
               'Recovering from GitHub label',
             );
             this.ensureGroup(issue);
@@ -1315,7 +1351,9 @@ export class SdlcPipeline {
         await this.notify(
           `SDLC: #${issue.issue_number} in ${issue.repo} — low-risk, auto-merging`,
         );
-        updateSdlcStage(issue.repo, issue.issue_number, 'merge', { retry_count: 0 });
+        updateSdlcStage(issue.repo, issue.issue_number, 'merge', {
+          retry_count: 0,
+        });
         const mergeIssue = getSdlcIssue(issue.repo, issue.issue_number)!;
         this.ensureGroup(mergeIssue);
         this.enqueueStage(mergeIssue);
