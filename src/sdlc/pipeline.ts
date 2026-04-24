@@ -9,6 +9,7 @@ import type { RegisteredGroup } from '../types.js';
 import {
   MAX_SDLC_RETRIES,
   SDLC_MAX_HEAVY_CONTAINERS,
+  SDLC_REPOS,
   SDLC_WEBHOOK_URL,
 } from './config.js';
 import {
@@ -999,7 +1000,29 @@ export class SdlcPipeline {
    * Recover in-progress issues on startup.
    */
   recoverInProgress(): void {
-    // Migrate legacy awaiting_merge issues to the active merge stage
+    // Primary: recover from GitHub labels (source of truth)
+    for (const repo of SDLC_REPOS) {
+      this.recoverFromGitHubLabels(repo);
+    }
+
+    // Fallback: also check DB for issues that may not have labels yet
+    for (const stage of RUNNABLE_STAGES) {
+      const issues = getSdlcIssuesByStage(stage);
+      for (const issue of issues) {
+        const jid = issueJid(issue.repo, issue.issue_number);
+        // Skip if already recovered from labels
+        if (this.deps.registeredGroups()[jid]) continue;
+
+        logger.info(
+          { repo: issue.repo, issueNumber: issue.issue_number, stage },
+          'Recovering in-progress SDLC issue (DB fallback)',
+        );
+        this.ensureGroup(issue);
+        this.enqueueStage(issue);
+      }
+    }
+
+    // Legacy migration: awaiting_merge → merge
     const awaitingMerge = getSdlcIssuesByStage('awaiting_merge' as SdlcStage);
     for (const issue of awaitingMerge) {
       logger.info(
@@ -1010,16 +1033,96 @@ export class SdlcPipeline {
         retry_count: 0,
       });
     }
+  }
 
-    for (const stage of RUNNABLE_STAGES) {
-      const issues = getSdlcIssuesByStage(stage);
-      for (const issue of issues) {
-        logger.info(
-          { repo: issue.repo, issueNumber: issue.issue_number, stage },
-          'Recovering in-progress SDLC issue',
-        );
-        this.ensureGroup(issue);
-        this.enqueueStage(issue);
+  /**
+   * Scan a repo's open issues and PRs for sdlc:* labels and recover them.
+   * This is the GitHub-as-source-of-truth recovery path.
+   */
+  private recoverFromGitHubLabels(repo: string): void {
+    const { readEnvFile } = require('../env.js') as typeof import('../env.js');
+    const ghEnv = readEnvFile(['GITHUB_TOKEN']);
+    const token = ghEnv.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
+    if (!token) return;
+
+    // Map new label states to old DB stages for compatibility
+    const labelToStage: Record<string, SdlcStage> = {
+      'triage': 'triage',
+      'blocked': 'blocked',
+      'plan-ready': 'awaiting_approval',
+      'plan-approved': 'implement',
+      'review': 'review',
+      'validate': 'validate',
+      'awaiting-merge': 'merge',
+      'merge': 'merge',
+    };
+
+    for (const [labelState, dbStage] of Object.entries(labelToStage)) {
+      const label = `sdlc:${labelState}`;
+      try {
+        const result = execSync(
+          `gh search issues --repo ${repo} --label "${label}" --state open --json number,title --jq '.[] | "\\(.number)\\t\\(.title)"'`,
+          { encoding: 'utf-8', env: { ...process.env, GITHUB_TOKEN: token }, stdio: ['pipe', 'pipe', 'pipe'] },
+        ).trim();
+
+        if (!result) continue;
+
+        for (const line of result.split('\n')) {
+          const [numStr, ...titleParts] = line.split('\t');
+          const num = parseInt(numStr, 10);
+          if (isNaN(num)) continue;
+          const title = titleParts.join('\t');
+
+          // Ensure cache entry exists
+          const existing = getSdlcIssue(repo, num);
+          if (!existing) {
+            // New to the pipeline — create a DB entry
+            upsertSdlcIssue({
+              repo,
+              issue_number: num,
+              current_stage: dbStage,
+              issue_title: title,
+              issue_body: null,
+              issue_labels: null,
+              classification: null,
+              branch_name: null,
+              pr_number: null,
+              retry_count: 0,
+              blocked_by: null,
+              metadata: null,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            });
+          } else if (existing.current_stage !== dbStage) {
+            // Label disagrees with DB — trust the label
+            updateSdlcStage(repo, num, dbStage, { retry_count: 0 });
+          }
+
+          // Skip feedback-required flagged issues
+          try {
+            const labelsResult = execSync(
+              `gh api repos/${repo}/issues/${num}/labels --jq '[.[].name]'`,
+              { encoding: 'utf-8', env: { ...process.env, GITHUB_TOKEN: token }, stdio: ['pipe', 'pipe', 'pipe'] },
+            );
+            const labels: string[] = JSON.parse(labelsResult);
+            if (labels.includes('sdlc:feedback-required')) {
+              logger.debug({ repo, issueNumber: num, stage: labelState }, 'Skipping recovery — feedback-required');
+              continue;
+            }
+          } catch { /* proceed */ }
+
+          if (RUNNABLE_STAGES.has(dbStage)) {
+            const issue = getSdlcIssue(repo, num)!;
+            logger.info(
+              { repo, issueNumber: num, stage: labelState },
+              'Recovering from GitHub label',
+            );
+            this.ensureGroup(issue);
+            this.enqueueStage(issue);
+          }
+        }
+      } catch (err) {
+        logger.warn({ repo, label, err }, 'Failed to scan GitHub labels for recovery');
       }
     }
   }
@@ -1333,6 +1436,57 @@ export class SdlcPipeline {
   private enqueueStage(issue: SdlcIssue): void {
     const stage = issue.current_stage;
     if (!RUNNABLE_STAGES.has(stage)) return;
+
+    // Guard: PR stages require an open PR — bail if closed/missing
+    const prStages = new Set(['review', 'validate', 'merge']);
+    if (prStages.has(stage) && issue.pr_number) {
+      try {
+        const result = execSync(
+          `gh pr view ${issue.pr_number} --repo ${issue.repo} --json state --jq .state`,
+          { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+        ).trim();
+        if (result === 'CLOSED') {
+          logger.warn(
+            { repo: issue.repo, issueNumber: issue.issue_number, prNumber: issue.pr_number, stage },
+            'PR is closed — adding feedback-required',
+          );
+          const targetNumber = issue.pr_number || issue.issue_number;
+          addFlag(issue.repo, targetNumber, 'feedback-required');
+          updateSdlcStage(issue.repo, issue.issue_number, stage, {
+            metadata: JSON.stringify({
+              ...JSON.parse(issue.metadata || '{}'),
+              last_error: `PR #${issue.pr_number} is closed. Needs re-implementation or manual reopen.`,
+            }),
+          });
+          this.notify(
+            `SDLC: #${issue.issue_number} in ${issue.repo} — PR #${issue.pr_number} is closed. sdlc:feedback-required added.`,
+          );
+          return;
+        }
+      } catch {
+        // gh CLI failed — proceed anyway, agent will discover the issue
+      }
+    }
+
+    // Guard: if feedback-required flag is present, don't enqueue — issue is paused
+    try {
+      const targetNumber = issue.pr_number && ['review', 'validate', 'merge'].includes(stage)
+        ? issue.pr_number : issue.issue_number;
+      const result = execSync(
+        `gh api repos/${issue.repo}/issues/${targetNumber}/labels --jq '[.[].name]'`,
+        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+      );
+      const labels: string[] = JSON.parse(result);
+      if (labels.includes('sdlc:feedback-required')) {
+        logger.info(
+          { repo: issue.repo, issueNumber: issue.issue_number, stage },
+          'Issue has feedback-required flag — not enqueueing',
+        );
+        return;
+      }
+    } catch {
+      // gh CLI failed — proceed
+    }
 
     const isHeavy = HEAVY_STAGES.has(stage);
     const isMerge = stage === 'merge';
