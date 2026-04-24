@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR } from '../config.js';
+import { readEnvFile } from '../env.js';
 import { runContainerAgent } from '../container-runner.js';
 import { logger } from '../logger.js';
 import type { RegisteredGroup } from '../types.js';
@@ -110,12 +111,9 @@ function ghLabel(
   label: string,
 ): void {
   try {
-    const { readEnvFile } = require('../env.js') as typeof import('../env.js');
     const ghEnv = readEnvFile(['GITHUB_TOKEN']);
     const token = ghEnv.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
     if (!token) return;
-    const { execSync } =
-      require('child_process') as typeof import('child_process');
     const flag = action === 'add' ? '--add-label' : '--remove-label';
     execSync(`gh issue edit ${issueNumber} ${flag} "${label}" --repo ${repo}`, {
       env: { ...process.env, GITHUB_TOKEN: token },
@@ -132,9 +130,6 @@ function ghLabel(
  */
 function getOpenSubIssues(repo: string, issueNumber: number): BlockerRef[] {
   try {
-    const { readEnvFile } = require('../env.js') as typeof import('../env.js');
-    const { execSync } =
-      require('child_process') as typeof import('child_process');
     const ghEnv = readEnvFile(['GITHUB_TOKEN']);
     const token = ghEnv.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
     if (!token) return [];
@@ -164,12 +159,9 @@ function getOpenSubIssues(repo: string, issueNumber: number): BlockerRef[] {
 /** Best-effort comment on an issue via gh CLI. */
 function ghComment(repo: string, issueNumber: number, body: string): void {
   try {
-    const { readEnvFile } = require('../env.js') as typeof import('../env.js');
     const ghEnv = readEnvFile(['GITHUB_TOKEN']);
     const token = ghEnv.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
     if (!token) return;
-    const { execSync } =
-      require('child_process') as typeof import('child_process');
     execSync(
       `gh issue comment ${issueNumber} --repo ${repo} --body "${body.replace(/"/g, '\\"')}"`,
       { env: { ...process.env, GITHUB_TOKEN: token }, stdio: 'pipe' },
@@ -715,10 +707,6 @@ export class SdlcPipeline {
 
   private determineResumeStage(issue: SdlcIssue): SdlcStage {
     try {
-      const { readEnvFile } =
-        require('../env.js') as typeof import('../env.js');
-      const { execSync } =
-        require('child_process') as typeof import('child_process');
       const ghEnv = readEnvFile(['GITHUB_TOKEN']);
       const token = ghEnv.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
       if (!token) return 'triage';
@@ -1040,21 +1028,20 @@ export class SdlcPipeline {
    * This is the GitHub-as-source-of-truth recovery path.
    */
   private recoverFromGitHubLabels(repo: string): void {
-    const { readEnvFile } = require('../env.js') as typeof import('../env.js');
     const ghEnv = readEnvFile(['GITHUB_TOKEN']);
     const token = ghEnv.GITHUB_TOKEN || process.env.GITHUB_TOKEN;
     if (!token) return;
 
     // Map new label states to old DB stages for compatibility
     const labelToStage: Record<string, SdlcStage> = {
-      'triage': 'triage',
-      'blocked': 'blocked',
+      triage: 'triage',
+      blocked: 'blocked',
       'plan-ready': 'awaiting_approval',
       'plan-approved': 'implement',
-      'review': 'review',
-      'validate': 'validate',
+      review: 'review',
+      validate: 'validate',
       'awaiting-merge': 'merge',
-      'merge': 'merge',
+      merge: 'merge',
     };
 
     for (const [labelState, dbStage] of Object.entries(labelToStage)) {
@@ -1062,7 +1049,11 @@ export class SdlcPipeline {
       try {
         const result = execSync(
           `gh search issues --repo ${repo} --label "${label}" --state open --json number,title --jq '.[] | "\\(.number)\\t\\(.title)"'`,
-          { encoding: 'utf-8', env: { ...process.env, GITHUB_TOKEN: token }, stdio: ['pipe', 'pipe', 'pipe'] },
+          {
+            encoding: 'utf-8',
+            env: { ...process.env, GITHUB_TOKEN: token },
+            stdio: ['pipe', 'pipe', 'pipe'],
+          },
         ).trim();
 
         if (!result) continue;
@@ -1102,14 +1093,23 @@ export class SdlcPipeline {
           try {
             const labelsResult = execSync(
               `gh api repos/${repo}/issues/${num}/labels --jq '[.[].name]'`,
-              { encoding: 'utf-8', env: { ...process.env, GITHUB_TOKEN: token }, stdio: ['pipe', 'pipe', 'pipe'] },
+              {
+                encoding: 'utf-8',
+                env: { ...process.env, GITHUB_TOKEN: token },
+                stdio: ['pipe', 'pipe', 'pipe'],
+              },
             );
             const labels: string[] = JSON.parse(labelsResult);
             if (labels.includes('sdlc:feedback-required')) {
-              logger.debug({ repo, issueNumber: num, stage: labelState }, 'Skipping recovery — feedback-required');
+              logger.debug(
+                { repo, issueNumber: num, stage: labelState },
+                'Skipping recovery — feedback-required',
+              );
               continue;
             }
-          } catch { /* proceed */ }
+          } catch {
+            /* proceed */
+          }
 
           if (RUNNABLE_STAGES.has(dbStage)) {
             const issue = getSdlcIssue(repo, num)!;
@@ -1122,7 +1122,10 @@ export class SdlcPipeline {
           }
         }
       } catch (err) {
-        logger.warn({ repo, label, err }, 'Failed to scan GitHub labels for recovery');
+        logger.warn(
+          { repo, label, err },
+          'Failed to scan GitHub labels for recovery',
+        );
       }
     }
   }
@@ -1447,7 +1450,12 @@ export class SdlcPipeline {
         ).trim();
         if (result === 'CLOSED') {
           logger.warn(
-            { repo: issue.repo, issueNumber: issue.issue_number, prNumber: issue.pr_number, stage },
+            {
+              repo: issue.repo,
+              issueNumber: issue.issue_number,
+              prNumber: issue.pr_number,
+              stage,
+            },
             'PR is closed — adding feedback-required',
           );
           const targetNumber = issue.pr_number || issue.issue_number;
@@ -1470,8 +1478,10 @@ export class SdlcPipeline {
 
     // Guard: if feedback-required flag is present, don't enqueue — issue is paused
     try {
-      const targetNumber = issue.pr_number && ['review', 'validate', 'merge'].includes(stage)
-        ? issue.pr_number : issue.issue_number;
+      const targetNumber =
+        issue.pr_number && ['review', 'validate', 'merge'].includes(stage)
+          ? issue.pr_number
+          : issue.issue_number;
       const result = execSync(
         `gh api repos/${issue.repo}/issues/${targetNumber}/labels --jq '[.[].name]'`,
         { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
