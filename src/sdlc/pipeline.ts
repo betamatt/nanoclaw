@@ -1045,7 +1045,12 @@ export class SdlcPipeline {
       merge: 'merge',
     };
 
-    const isPrState = new Set(['review', 'validate', 'awaiting-merge', 'merge']);
+    const isPrState = new Set([
+      'review',
+      'validate',
+      'awaiting-merge',
+      'merge',
+    ]);
 
     for (const [labelState, dbStage] of Object.entries(labelToStage)) {
       const label = `sdlc:${labelState}`;
@@ -1084,13 +1089,19 @@ export class SdlcPipeline {
               try {
                 const body = execSync(
                   `gh pr view ${num} --repo ${repo} --json body --jq .body`,
-                  { encoding: 'utf-8', env: { ...process.env, GITHUB_TOKEN: token }, stdio: ['pipe', 'pipe', 'pipe'] },
+                  {
+                    encoding: 'utf-8',
+                    env: { ...process.env, GITHUB_TOKEN: token },
+                    stdio: ['pipe', 'pipe', 'pipe'],
+                  },
                 ).trim();
                 const match = body.match(/(?:Resolves|Closes|Fixes)\s+#(\d+)/i);
                 if (match) {
                   issueNum = parseInt(match[1], 10);
                 }
-              } catch { /* use PR number as fallback */ }
+              } catch {
+                /* use PR number as fallback */
+              }
             }
           }
 
@@ -1127,8 +1138,18 @@ export class SdlcPipeline {
             const updates: Record<string, unknown> = {};
             if (existing.current_stage !== dbStage) updates.retry_count = 0;
             if (prNum && !existing.pr_number) updates.pr_number = prNum;
-            if (existing.current_stage !== dbStage || Object.keys(updates).length > 0) {
-              updateSdlcStage(repo, issueNum, existing.current_stage !== dbStage ? dbStage : existing.current_stage, updates);
+            if (
+              existing.current_stage !== dbStage ||
+              Object.keys(updates).length > 0
+            ) {
+              updateSdlcStage(
+                repo,
+                issueNum,
+                existing.current_stage !== dbStage
+                  ? dbStage
+                  : existing.current_stage,
+                updates,
+              );
             }
           }
 

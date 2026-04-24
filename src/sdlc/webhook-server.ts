@@ -265,7 +265,6 @@ async function handleEvent(
           // Human applied merge label on a PR (handled via issues API since PRs are issues)
           await pipeline.handleMergeRequested(repo, issue.number);
         }
-
       } else if (action === 'unlabeled') {
         // Flag removal: re-run the current stage
         const label = payload.label as GitHubLabel | undefined;
