@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import http from 'http';
 
 import { log } from '../log.js';
-import { GITHUB_WEBHOOK_SECRET, SDLC_REPOS, SDLC_WEBHOOK_PORT } from './config.js';
+import { GITHUB_WEBHOOK_SECRET, SDLC_REPOS } from './config.js';
 import { execSync } from 'child_process';
 import { readEnvFile } from '../env.js';
 import { removeStateLabel } from './labels.js';
@@ -46,18 +46,18 @@ function verifySignature(payload: Buffer, signature: string | undefined): boolea
   }
 }
 
-export function startWebhookServer(pipeline: SdlcPipeline): http.Server {
-  const server = http.createServer((req, res) => {
-    // Health check
-    if (req.method === 'GET' && req.url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', service: 'sdlc-webhook' }));
-      return;
-    }
+/**
+ * Register the GitHub webhook handler on the shared webhook server.
+ * Route: /webhook/github
+ */
+export function startWebhookServer(pipeline: SdlcPipeline): void {
+  // Import at top level to avoid require() in ESM
+  import('../webhook-server.js').then(({ registerRawWebhookRoute }) => {
 
-    if (req.method !== 'POST' || req.url !== '/webhook/github') {
-      res.writeHead(404);
-      res.end('Not Found');
+  registerRawWebhookRoute('github', (req, res) => {
+    if (req.method !== 'POST') {
+      res.writeHead(405);
+      res.end('Method Not Allowed');
       return;
     }
 
@@ -90,12 +90,7 @@ export function startWebhookServer(pipeline: SdlcPipeline): http.Server {
       handleEvent(event, payload, pipeline).catch((err) => log.error('Error handling webhook event', { err, event }));
     });
   });
-
-  server.listen(SDLC_WEBHOOK_PORT, () => {
-    log.info('SDLC webhook server listening', { port: SDLC_WEBHOOK_PORT });
-  });
-
-  return server;
+  }); // end import().then()
 }
 
 interface GitHubIssue {

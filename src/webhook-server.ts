@@ -21,6 +21,7 @@ interface WebhookEntry {
 }
 
 const routes = new Map<string, WebhookEntry>();
+const rawRoutes = new Map<string, (req: http.IncomingMessage, res: http.ServerResponse) => void>();
 let server: http.Server | null = null;
 
 /** Convert Node.js IncomingMessage to a Web API Request. */
@@ -84,7 +85,7 @@ function ensureServer(): void {
   server = http.createServer(async (req, res) => {
     const url = req.url || '/';
 
-    // Route: /webhook/{adapterName}
+    // Route: /webhook/{name}
     const match = url.match(/^\/webhook\/([^/?]+)/);
     if (!match) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -93,6 +94,14 @@ function ensureServer(): void {
     }
 
     const adapterName = match[1];
+
+    // Check raw routes first (e.g. SDLC GitHub webhooks)
+    const rawHandler = rawRoutes.get(adapterName);
+    if (rawHandler) {
+      rawHandler(req, res);
+      return;
+    }
+
     const entry = routes.get(adapterName);
     if (!entry) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -121,6 +130,20 @@ function ensureServer(): void {
   server.listen(port, '0.0.0.0', () => {
     log.info('Webhook server started', { port, adapters: [...routes.keys()] });
   });
+}
+
+/**
+ * Register a raw HTTP handler on the shared webhook server.
+ * Used for non-Chat-SDK webhooks (e.g. GitHub SDLC webhooks).
+ * Route: /webhook/{name}
+ */
+export function registerRawWebhookRoute(
+  name: string,
+  handler: (req: http.IncomingMessage, res: http.ServerResponse) => void,
+): void {
+  rawRoutes.set(name, handler);
+  ensureServer();
+  log.info('Raw webhook route registered', { name, path: `/webhook/${name}` });
 }
 
 /** Shut down the webhook server. */

@@ -57,7 +57,9 @@ export function startFunnel(): string | null {
 
   // `tailscale funnel --bg` runs in background, forwarding traffic to the local port
   try {
-    funnelProc = spawn('tailscale', [...sockArgs, 'funnel', '--bg', `${SDLC_WEBHOOK_PORT}`], {
+    // Use the shared webhook server port (default 3000), not SDLC_WEBHOOK_PORT
+    const webhookPort = process.env.WEBHOOK_PORT || '3000';
+    funnelProc = spawn('tailscale', [...sockArgs, 'funnel', '--bg', webhookPort], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
