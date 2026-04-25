@@ -159,6 +159,16 @@ async function main(): Promise<void> {
   startHostSweep();
   log.info('Host sweep started');
 
+  // 7. SDLC pipeline (optional — gated by SDLC_ENABLED env var)
+  const { SDLC_ENABLED } = await import('./sdlc/config.js');
+  if (SDLC_ENABLED) {
+    const { initSdlcSchema } = await import('./sdlc/db.js');
+    initSdlcSchema(db);
+    const { startSdlcSystem } = await import('./sdlc/pipeline.js');
+    startSdlcSystem({ sendNotification: async (text) => log.info(text) });
+    log.info('SDLC pipeline started');
+  }
+
   log.info('NanoClaw running');
 }
 

@@ -46,6 +46,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libcups2 \
         libdrm2 \
         libxshmfence1 \
+        build-essential \
+        pkg-config \
+        libssl-dev \
         ca-certificates \
         curl \
         git \
@@ -54,6 +57,20 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && if [ "$INSTALL_CJK_FONTS" = "true" ]; then \
         apt-get install -y --no-install-recommends fonts-noto-cjk; \
        fi \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- Rust toolchain (for SDLC pipeline builds) ---------------------------------
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
+    && chmod -R a+rX /usr/local/rustup /usr/local/cargo
+
+# ---- GitHub CLI -----------------------------------------------------------------
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
 # Chromium path for agent-browser / Playwright consumers

@@ -153,6 +153,10 @@ Four types of skills. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full taxono
 | `/update-nanoclaw` | Bring upstream updates into a customized install |
 | `/init-onecli` | Install OneCLI Agent Vault and migrate `.env` credentials |
 
+## Custom Skills Documentation
+
+When adding or modifying skills directly on this fork (not via `/add-skill`), you MUST update [CUSTOM_SKILLS.md](CUSTOM_SKILLS.md) to document the skill's purpose, lifecycle, required `.env` variables, and key files. Keep it current — it is the source of truth for fork-specific customizations.
+
 ## Contributing
 
 Before creating a PR, adding a skill, or preparing any contribution, you MUST read [CONTRIBUTING.md](CONTRIBUTING.md). It covers accepted change types, the four skill types and their guidelines, `SKILL.md` format rules, and the pre-submission checklist.

@@ -243,11 +243,13 @@ export class ClaudeProvider implements AgentProvider {
   private mcpServers: Record<string, McpServerConfig>;
   private env: Record<string, string | undefined>;
   private additionalDirectories?: string[];
+  private plugins?: Array<{ type: 'local'; path: string }>;
 
   constructor(options: ProviderOptions = {}) {
     this.assistantName = options.assistantName;
     this.mcpServers = options.mcpServers ?? {};
     this.additionalDirectories = options.additionalDirectories;
+    this.plugins = options.plugins;
     this.env = {
       ...(options.env ?? {}),
       CLAUDE_CODE_AUTO_COMPACT_WINDOW,
@@ -280,6 +282,10 @@ export class ClaudeProvider implements AgentProvider {
         allowDangerouslySkipPermissions: true,
         settingSources: ['project', 'user'],
         mcpServers: this.mcpServers,
+        // Forward plugins if configured (e.g., SDLC pipeline plugins)
+        ...(this.plugins && this.plugins.length > 0
+          ? { plugins: this.plugins }
+          : {}),
         hooks: {
           PreToolUse: [{ hooks: [preToolUseHook] }],
           PostToolUse: [{ hooks: [postToolUseHook] }],
