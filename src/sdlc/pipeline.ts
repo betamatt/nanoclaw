@@ -51,7 +51,9 @@ const RUNNABLE_STAGES = new Set<SdlcStage>(['triage', 'plan', 'implement', 'revi
 const HEAVY_STAGES = new Set<SdlcStage>(['implement', 'review', 'validate', 'merge']);
 
 function issueAgentGroupId(repo: string, issueNumber: number): string {
-  return `sdlc:${repo}#${issueNumber}`;
+  // No colons or hashes — these break Docker bind-mount paths
+  const slug = repo.replace(/\//g, '-');
+  return `sdlc-${slug}-${issueNumber}`;
 }
 
 function issueFolder(repo: string, issueNumber: number): string {
