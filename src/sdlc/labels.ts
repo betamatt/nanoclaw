@@ -7,8 +7,10 @@ import { execSync } from 'child_process';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
 import {
+  ALL_COMMAND_LABELS,
   ALL_STATE_LABELS,
   FEEDBACK_FLAG_LABEL,
+  type SdlcCommand,
   type SdlcFlag,
   type SdlcState,
   stateFromLabels,
@@ -62,8 +64,8 @@ export function applyStateLabel(repo: string, number: number, newState: SdlcStat
     currentLabels = [];
   }
 
-  // Compute new label set: remove all sdlc:* state and flag labels, add new state
-  const sdlcLabels = new Set([...ALL_STATE_LABELS, FEEDBACK_FLAG_LABEL]);
+  // Compute new label set: remove all sdlc:* state, command, and flag labels, add new state
+  const sdlcLabels = new Set([...ALL_STATE_LABELS, ...ALL_COMMAND_LABELS, FEEDBACK_FLAG_LABEL]);
   const kept = currentLabels.filter((l) => !sdlcLabels.has(l));
   kept.push(labelToAdd);
 
@@ -86,7 +88,7 @@ export function applyStateLabel(repo: string, number: number, newState: SdlcStat
  * Add a flag label to an issue or PR without touching state labels.
  */
 export function addFlag(repo: string, number: number, flag: SdlcFlag): void {
-  const label = `sdlc:${flag}`;
+  const label = `sdlc:flag:${flag}`;
   try {
     execSync(`gh api repos/${repo}/issues/${number}/labels -X POST -f "labels[]=${label}"`, {
       env: ghEnv(),
@@ -102,7 +104,7 @@ export function addFlag(repo: string, number: number, flag: SdlcFlag): void {
  * Remove a flag label from an issue or PR.
  */
 export function removeFlag(repo: string, number: number, flag: SdlcFlag): void {
-  const label = `sdlc:${flag}`;
+  const label = `sdlc:flag:${flag}`;
   try {
     execSync(`gh api repos/${repo}/issues/${number}/labels/${encodeURIComponent(label)} -X DELETE`, {
       env: ghEnv(),

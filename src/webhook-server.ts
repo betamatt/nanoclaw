@@ -84,6 +84,7 @@ function ensureServer(): void {
 
   server = http.createServer(async (req, res) => {
     const url = req.url || '/';
+    log.info('Webhook request', { method: req.method, url, ip: req.socket.remoteAddress });
 
     // Route: /webhook/{name}
     const match = url.match(/^\/webhook\/([^/?]+)/);
@@ -114,11 +115,20 @@ function ensureServer(): void {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const webhooks = entry.chat.webhooks as Record<string, (r: Request, opts?: any) => Promise<Response>>;
       const handler = webhooks[entry.adapterName];
+      if (!handler) {
+        log.error('No webhook handler found', { adapter: adapterName, availableKeys: Object.keys(webhooks) });
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end(`No handler for adapter: ${adapterName}`);
+        return;
+      }
       const webRes = await handler(webReq, {
         waitUntil: (p: Promise<unknown>) => {
-          p.catch(() => {});
+          p.catch((err) => {
+            log.error('Webhook waitUntil error', { adapter: adapterName, err });
+          });
         },
       });
+      log.info('Webhook response', { adapter: adapterName, status: webRes.status });
       await fromWebResponse(webRes, res);
     } catch (err) {
       log.error('Webhook handler error', { adapter: adapterName, url: req.url, err });

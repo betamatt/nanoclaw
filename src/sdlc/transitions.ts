@@ -1,102 +1,107 @@
 /**
- * SDLC state machine transition table and validation.
- * See .claude/skills/github-sdlc/STATE_MACHINE.md for the full spec.
+ * SDLC label taxonomy and state machine.
+ *
+ * Three kinds of sdlc: labels:
+ *
+ * - **States** — what the issue/PR IS right now. Mutually exclusive.
+ *   Only one state label at a time. Applied by the agent (or by the
+ *   pipeline on recovery). Humans should not manually set state labels.
+ *
+ * - **Commands** — human actions that trigger a state transition.
+ *   Applied by a human, consumed by the pipeline (which removes the
+ *   command label and applies the resulting state). Ephemeral.
+ *
+ * - **Flags** — modifiers that can coexist with any state.
+ *   Applied/removed by either agent or human.
  */
 
-// Issue states
-export type IssueState = 'triage' | 'blocked' | 'plan-ready' | 'plan-approved' | 'implemented';
+// ── States ───────────────────────────────────────────────────────────────────
 
-// PR states
-export type PrState = 'review' | 'validate' | 'awaiting-merge' | 'merge';
+/** Issue states (pre-PR) */
+export type IssueState = 'triage' | 'blocked' | 'plan-ready' | 'implementing';
 
-// All states
+/** PR states */
+export type PrState = 'review' | 'validate' | 'merging';
+
+/** All states */
 export type SdlcState = IssueState | PrState;
 
-// Flag
-export type SdlcFlag = 'feedback-required';
-
-/** Legal transitions: from → allowed successors */
+/** Legal state transitions (agent-driven) */
 export const LEGAL_TRANSITIONS: Record<SdlcState, SdlcState[]> = {
   triage: ['blocked', 'plan-ready'],
-  blocked: ['plan-ready'],
-  'plan-ready': ['plan-approved'],
-  'plan-approved': ['implemented'],
-  implemented: ['review'],
+  blocked: ['implementing'],       // unblocked → straight to implementing
+  'plan-ready': ['implementing'],   // via approve-plan command
+  implementing: ['review'],         // agent opens PR, moves to review
   review: ['validate'],
-  validate: ['awaiting-merge'],
-  'awaiting-merge': ['merge'],
-  merge: [],
+  validate: ['merging'],            // via merge command (or auto for low-risk)
+  merging: [],                      // terminal active state → closed on success
 };
 
-/** States that only the agent may apply */
-export const AGENT_ONLY_STATES = new Set<SdlcState>([
-  'triage',
-  'blocked',
-  'plan-ready',
-  'implemented',
-  'review',
-  'validate',
-  'awaiting-merge',
-]);
-
-/** States that only a human may apply */
-export const HUMAN_ONLY_STATES = new Set<SdlcState>(['plan-approved', 'merge']);
-
-/** States where sdlc:feedback-required flag is valid */
-export const FLAGGABLE_STATES = new Set<SdlcState>(['triage', 'plan-ready', 'review', 'validate', 'merge']);
-
 /** States that live on the issue (pre-PR) */
-export const ISSUE_STATES = new Set<SdlcState>(['triage', 'blocked', 'plan-ready', 'plan-approved', 'implemented']);
+export const ISSUE_STATES = new Set<SdlcState>(['triage', 'blocked', 'plan-ready', 'implementing']);
 
 /** States that live on the PR */
-export const PR_STATES = new Set<SdlcState>(['review', 'validate', 'awaiting-merge', 'merge']);
+export const PR_STATES = new Set<SdlcState>(['review', 'validate', 'merging']);
+
+/** States where sdlc:feedback-required flag is valid */
+export const FLAGGABLE_STATES = new Set<SdlcState>(['triage', 'plan-ready', 'review', 'validate', 'merging']);
+
+// ── Commands ─────────────────────────────────────────────────────────────────
+
+export type SdlcCommand = 'approve-plan' | 'merge';
+
+/** Command → { from states, resulting state } */
+export const COMMAND_EFFECTS: Record<SdlcCommand, { from: Set<SdlcState>; to: SdlcState }> = {
+  'approve-plan': { from: new Set(['plan-ready']), to: 'implementing' },
+  merge: { from: new Set(['validate']), to: 'merging' },
+};
+
+export const ALL_COMMANDS: SdlcCommand[] = Object.keys(COMMAND_EFFECTS) as SdlcCommand[];
+
+// ── Flags ────────────────────────────────────────────────────────────────────
+
+export type SdlcFlag = 'feedback-required';
+
+export const FEEDBACK_FLAG_LABEL = 'sdlc:flag:feedback-required';
+
+// ── Derived sets ─────────────────────────────────────────────────────────────
 
 /** All state label names (prefixed with sdlc:) */
-export const ALL_STATE_LABELS = [...Object.keys(LEGAL_TRANSITIONS)].map((s) => `sdlc:${s}`);
+export const ALL_STATE_LABELS = Object.keys(LEGAL_TRANSITIONS).map((s) => `sdlc:${s}`);
 
-/** The flag label */
-export const FEEDBACK_FLAG_LABEL = 'sdlc:feedback-required';
+/** All command label names */
+export const ALL_COMMAND_LABELS = ALL_COMMANDS.map((c) => `sdlc:cmd:${c}`);
 
-/**
- * Validate a state transition.
- * Returns null if valid, or an error string if invalid.
- */
-export function validateTransition(from: SdlcState | null, to: SdlcState, actorIsAgent: boolean): string | null {
-  // Check actor permissions
-  if (actorIsAgent && HUMAN_ONLY_STATES.has(to)) {
-    return `State "${to}" can only be applied by a human`;
-  }
-  if (!actorIsAgent && AGENT_ONLY_STATES.has(to)) {
-    return `State "${to}" can only be applied by the agent`;
-  }
+/** All labels the pipeline manages (states + commands + flags) */
+export const ALL_SDLC_LABELS = [...ALL_STATE_LABELS, ...ALL_COMMAND_LABELS, FEEDBACK_FLAG_LABEL];
 
-  // New issue — only triage is valid
-  if (from === null) {
-    if (to !== 'triage') {
-      return `New issues must start in "triage", not "${to}"`;
-    }
-    return null;
-  }
-
-  // Check legal transition
-  const allowed = LEGAL_TRANSITIONS[from];
-  if (!allowed || !allowed.includes(to)) {
-    return `Transition from "${from}" to "${to}" is not allowed`;
-  }
-
-  return null;
-}
+// ── Functions ────────────────────────────────────────────────────────────────
 
 /**
  * Extract the current SDLC state from a labels array.
- * Returns the state name (without sdlc: prefix) or null.
+ * Only matches state labels, not commands or flags.
  */
 export function stateFromLabels(labels: Array<{ name: string }>): SdlcState | null {
   for (const label of labels) {
     if (label.name.startsWith('sdlc:')) {
-      const state = label.name.slice(5) as SdlcState;
-      if (state in LEGAL_TRANSITIONS) {
-        return state;
+      const value = label.name.slice(5);
+      if (value in LEGAL_TRANSITIONS) {
+        return value as SdlcState;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract any command labels from the labels array.
+ */
+export function commandFromLabels(labels: Array<{ name: string }>): SdlcCommand | null {
+  for (const label of labels) {
+    if (label.name.startsWith('sdlc:')) {
+      const value = label.name.slice(5);
+      if (ALL_COMMANDS.includes(value as SdlcCommand)) {
+        return value as SdlcCommand;
       }
     }
   }

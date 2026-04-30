@@ -8,11 +8,13 @@ import { readEnvFile } from '../env.js';
 import { removeStateLabel } from './labels.js';
 import type { SdlcPipeline } from './pipeline.js';
 import {
+  ALL_COMMANDS,
+  COMMAND_EFFECTS,
   FEEDBACK_FLAG_LABEL,
   LEGAL_TRANSITIONS,
+  type SdlcCommand,
   type SdlcState,
   stateFromLabels,
-  validateTransition,
 } from './transitions.js';
 
 /** Add a thumbs-up reaction to a comment to acknowledge it. */
@@ -53,43 +55,42 @@ function verifySignature(payload: Buffer, signature: string | undefined): boolea
 export function startWebhookServer(pipeline: SdlcPipeline): void {
   // Import at top level to avoid require() in ESM
   import('../webhook-server.js').then(({ registerRawWebhookRoute }) => {
-
-  registerRawWebhookRoute('github', (req, res) => {
-    if (req.method !== 'POST') {
-      res.writeHead(405);
-      res.end('Method Not Allowed');
-      return;
-    }
-
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
-    req.on('end', () => {
-      const body = Buffer.concat(chunks);
-      const signature = req.headers['x-hub-signature-256'] as string | undefined;
-
-      if (!verifySignature(body, signature)) {
-        log.warn('Webhook signature verification failed');
-        res.writeHead(401);
-        res.end('Unauthorized');
+    registerRawWebhookRoute('github', (req, res) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405);
+        res.end('Method Not Allowed');
         return;
       }
 
-      // Respond immediately — process async
-      res.writeHead(200);
-      res.end('OK');
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        const body = Buffer.concat(chunks);
+        const signature = req.headers['x-hub-signature-256'] as string | undefined;
 
-      const event = req.headers['x-github-event'] as string;
-      let payload: Record<string, unknown>;
-      try {
-        payload = JSON.parse(body.toString());
-      } catch (err) {
-        log.error('Failed to parse webhook payload', { err });
-        return;
-      }
+        if (!verifySignature(body, signature)) {
+          log.warn('Webhook signature verification failed');
+          res.writeHead(401);
+          res.end('Unauthorized');
+          return;
+        }
 
-      handleEvent(event, payload, pipeline).catch((err) => log.error('Error handling webhook event', { err, event }));
+        // Respond immediately — process async
+        res.writeHead(200);
+        res.end('OK');
+
+        const event = req.headers['x-github-event'] as string;
+        let payload: Record<string, unknown>;
+        try {
+          payload = JSON.parse(body.toString());
+        } catch (err) {
+          log.error('Failed to parse webhook payload', { err });
+          return;
+        }
+
+        handleEvent(event, payload, pipeline).catch((err) => log.error('Error handling webhook event', { err, event }));
+      });
     });
-  });
   }); // end import().then()
 }
 
@@ -144,44 +145,13 @@ function isAgentActor(sender: Record<string, unknown> | undefined): boolean {
 }
 
 /**
- * Handle a label guard check for sdlc:* state labels.
- * Validates the transition and rolls back if invalid.
- * Returns the new state if valid, null if invalid or not an sdlc label.
+ * Check if an applied label is an SDLC command (sdlc:cmd:*).
+ * Returns the command name if it is, null otherwise.
  */
-function guardLabelTransition(
-  repo: string,
-  number: number,
-  appliedLabel: string,
-  currentLabels: Array<{ name: string }>,
-  sender: Record<string, unknown> | undefined,
-): SdlcState | null {
-  // Only guard sdlc:* state labels (not flags)
-  if (!appliedLabel.startsWith('sdlc:') || appliedLabel === FEEDBACK_FLAG_LABEL) {
-    return null;
-  }
-
-  const newState = appliedLabel.slice(5) as SdlcState;
-
-  // Check if this is actually a known state
-  if (!(newState in LEGAL_TRANSITIONS)) return null;
-
-  const currentState = stateFromLabels(currentLabels.filter((l) => l.name !== appliedLabel));
-  const actorIsAgent = isAgentActor(sender);
-
-  // Validate but don't rollback — log only during migration period.
-  // Humans need to be able to rescue stuck issues by applying any label.
-  const error = validateTransition(currentState, newState, actorIsAgent);
-  if (error) {
-    log.info('Label guard: transition would be invalid (allowing during migration)', {
-      repo,
-      number,
-      from: currentState,
-      to: newState,
-      error,
-    });
-  }
-
-  return newState;
+function detectCommand(appliedLabel: string): SdlcCommand | null {
+  if (!appliedLabel.startsWith('sdlc:cmd:')) return null;
+  const value = appliedLabel.slice(9); // strip 'sdlc:cmd:'
+  return ALL_COMMANDS.includes(value as SdlcCommand) ? (value as SdlcCommand) : null;
 }
 
 async function handleEvent(event: string, payload: Record<string, unknown>, pipeline: SdlcPipeline): Promise<void> {
@@ -220,13 +190,11 @@ async function handleEvent(event: string, payload: Record<string, unknown>, pipe
         const label = payload.label as GitHubLabel | undefined;
         if (!label) break;
 
-        // New state machine: guard and dispatch sdlc:* labels
-        const sender = payload.sender as Record<string, unknown> | undefined;
-        const newState = guardLabelTransition(repo, issue.number, label.name, issue.labels, sender);
-        if (newState === 'plan-approved') {
+        // Check if this is a command label (human action)
+        const command = detectCommand(label.name);
+        if (command === 'approve-plan') {
           await pipeline.handlePlanApproved(repo, issue.number);
-        } else if (newState === 'merge') {
-          // Human applied merge label on a PR (handled via issues API since PRs are issues)
+        } else if (command === 'merge') {
           await pipeline.handleMergeRequested(repo, issue.number);
         }
       } else if (action === 'unlabeled') {
@@ -246,12 +214,12 @@ async function handleEvent(event: string, payload: Record<string, unknown>, pipe
       if (!comment || !issue) break;
 
       // Resolve the SDLC issue number — PRs have different numbers than their issues
-      const { getSdlcIssue, getSdlcIssueByPr } = await import('./db.js');
+      const { resolveIssueForPr } = await import('./github-state.js');
       const isPr = !!(issue as unknown as Record<string, unknown>).pull_request;
       let sdlcIssueNumber = issue.number;
-      if (!getSdlcIssue(repo, issue.number) && isPr) {
-        const byPr = getSdlcIssueByPr(repo, issue.number);
-        if (byPr) sdlcIssueNumber = byPr.issue_number;
+      if (isPr) {
+        const resolved = resolveIssueForPr(repo, issue.number);
+        if (resolved) sdlcIssueNumber = resolved;
       }
 
       let acted = false;
@@ -283,10 +251,9 @@ async function handleEvent(event: string, payload: Record<string, unknown>, pipe
         await pipeline.handlePrMerged(repo, pr.number);
       } else if (action === 'labeled') {
         const label = payload.label as GitHubLabel | undefined;
-        if (label && pr.labels) {
-          const sender = payload.sender as Record<string, unknown> | undefined;
-          const newState = guardLabelTransition(repo, pr.number, label.name, pr.labels, sender);
-          if (newState === 'merge') {
+        if (label) {
+          const cmd = detectCommand(label.name);
+          if (cmd === 'merge') {
             await pipeline.handleMergeRequested(repo, pr.number);
           }
         }
@@ -307,12 +274,12 @@ async function handleEvent(event: string, payload: Record<string, unknown>, pipe
       if (isAgentComment(review.body || '')) break;
 
       // Find the SDLC issue for this PR
-      const { getSdlcIssueByPr } = await import('./db.js');
-      const prIssue = getSdlcIssueByPr(repo, pr.number);
-      if (!prIssue) break;
+      const { resolveIssueForPr: resolveForReview } = await import('./github-state.js');
+      const prIssueNum = resolveForReview(repo, pr.number);
+      if (!prIssueNum) break;
 
       if (review.state === 'changes_requested' || review.body?.trim()) {
-        await pipeline.handleFeedback(repo, prIssue.issue_number, review.body || '');
+        await pipeline.handleFeedback(repo, prIssueNum, review.body || '');
       }
       break;
     }
@@ -324,11 +291,11 @@ async function handleEvent(event: string, payload: Record<string, unknown>, pipe
       if (!comment || !pr) break;
       if (isAgentComment(comment.body)) break;
 
-      const { getSdlcIssueByPr: getByPr } = await import('./db.js');
-      const prIssue2 = getByPr(repo, pr.number);
-      if (!prIssue2) break;
+      const { resolveIssueForPr: resolveForComment } = await import('./github-state.js');
+      const prIssueNum2 = resolveForComment(repo, pr.number);
+      if (!prIssueNum2) break;
 
-      const prActed = await pipeline.handleFeedback(repo, prIssue2.issue_number, comment.body);
+      const prActed = await pipeline.handleFeedback(repo, prIssueNum2, comment.body);
       if (prActed) {
         try {
           const ghEnv = readEnvFile(['GITHUB_TOKEN']);

@@ -164,41 +164,53 @@ const SDLC_LABELS = [
     color: '0075ca',
     description: 'Large scope — significant effort, architectural changes',
   },
-  // Pipeline status labels
-  {
-    name: 'sdlc:plan-ready',
-    color: '0e8a16',
-    description: 'SDLC: Implementation plan is ready for review',
-  },
+  // State labels (what the issue/PR IS)
   {
     name: 'sdlc:plan-ready',
     color: 'd4c5f9',
-    description: 'SDLC: Plan posted, awaiting human approval',
+    description: 'SDLC state: plan posted, awaiting human approval',
   },
   {
-    name: 'sdlc:plan-approved',
+    name: 'sdlc:implementing',
     color: '0e8a16',
-    description: 'SDLC: Human approved the plan',
+    description: 'SDLC state: actively being implemented',
   },
   {
-    name: 'sdlc:implemented',
+    name: 'sdlc:review',
     color: '1d76db',
-    description: 'SDLC: Implementation PR opened',
+    description: 'SDLC state: PR under code review',
   },
   {
-    name: 'sdlc:awaiting-merge',
-    color: 'fbca04',
-    description: 'SDLC: Awaiting human sign-off on merge',
+    name: 'sdlc:validate',
+    color: '1d76db',
+    description: 'SDLC state: PR being validated',
   },
   {
-    name: 'sdlc:feedback-required',
-    color: 'e4e669',
-    description: 'SDLC: Agent needs human input to proceed',
+    name: 'sdlc:merging',
+    color: '0e8a16',
+    description: 'SDLC state: PR being merged',
   },
   {
     name: 'sdlc:blocked',
     color: 'fbca04',
-    description: 'SDLC: Issue blocked by dependencies',
+    description: 'SDLC state: blocked by dependencies',
+  },
+  // Command labels (human actions)
+  {
+    name: 'sdlc:cmd:approve-plan',
+    color: '0e8a16',
+    description: 'SDLC command: approve the plan and start implementation',
+  },
+  {
+    name: 'sdlc:cmd:merge',
+    color: '0e8a16',
+    description: 'SDLC command: merge the PR',
+  },
+  // Flag labels (modifiers)
+  {
+    name: 'sdlc:flag:feedback-required',
+    color: 'e4e669',
+    description: 'SDLC flag: agent needs human input to proceed',
   },
 ];
 

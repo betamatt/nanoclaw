@@ -1,6 +1,61 @@
-import type { SdlcIssue } from './types.js';
+import { execSync } from 'child_process';
+import fs from 'fs';
 
-export function triagePrompt(issue: SdlcIssue): string {
+import { getWorktreePath } from './repo-manager.js';
+import type { SdlcIssueView } from './github-state.js';
+
+/**
+ * Detect prior work in the worktree so the agent can resume after a crash
+ * or restart instead of starting from scratch.
+ */
+function detectPriorWork(issue: SdlcIssueView): string {
+  const wtPath = getWorktreePath(issue.repo, issue.issue_number);
+  if (!fs.existsSync(wtPath)) return '';
+
+  const parts: string[] = [];
+  const run = (cmd: string) => {
+    try {
+      return execSync(cmd, { cwd: wtPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    } catch {
+      return '';
+    }
+  };
+
+  // Check for commits ahead of origin/main
+  const aheadCount = run('git rev-list --count origin/main..HEAD');
+  if (aheadCount && parseInt(aheadCount) > 0) {
+    const commitLog = run('git log --oneline origin/main..HEAD');
+    parts.push(`**Commits ahead of main (${aheadCount}):**\n\`\`\`\n${commitLog}\n\`\`\``);
+  }
+
+  // Check for uncommitted changes
+  const status = run('git status --porcelain');
+  if (status) {
+    parts.push(`**Uncommitted changes:**\n\`\`\`\n${status}\n\`\`\``);
+  }
+
+  // Check for an existing PR
+  if (issue.branch_name) {
+    const prInfo = run(`gh pr view ${issue.branch_name} --repo ${issue.repo} --json number,title,state,url --jq '"PR #\\(.number): \\(.title) [\\(.state)]\\n\\(.url)"'`);
+    if (prInfo) {
+      parts.push(`**Existing PR:**\n${prInfo}`);
+    }
+  }
+
+  if (parts.length === 0) return '';
+
+  return `\n## Prior Work Detected
+
+This task was previously attempted. The worktree contains work from a prior run.
+**Resume from where it left off** — do not redo completed work.
+
+${parts.join('\n\n')}
+
+Review what was already done, then continue from where it stopped. If the prior work
+is complete (PR exists, tests pass), verify and write the IPC result.\n`;
+}
+
+export function triagePrompt(issue: SdlcIssueView): string {
   return `You are performing SDLC triage on a GitHub issue.
 
 ## Issue Details
@@ -8,7 +63,7 @@ export function triagePrompt(issue: SdlcIssue): string {
 - Issue #${issue.issue_number}: ${issue.issue_title}
 - Body:
 ${issue.issue_body || '(no body)'}
-- Current labels: ${issue.issue_labels || '[]'}
+- Current labels: ${JSON.stringify(issue.issue_labels)}
 
 ## Instructions
 
@@ -88,22 +143,10 @@ ${issue.issue_body || '(no body)'}
 - Do NOT skip the IPC result file — it drives the pipeline forward`;
 }
 
-export function planPrompt(issue: SdlcIssue): string {
+export function planPrompt(issue: SdlcIssueView): string {
   const classification = issue.classification
     ? JSON.parse(issue.classification)
     : { type: 'unknown', complexity: 'unknown' };
-  const meta = JSON.parse(issue.metadata || '{}');
-  const feedbackSection = meta.pending_feedback
-    ? `
-## Human Feedback (ACTION REQUIRED)
-Your previous plan was reviewed and the following feedback was provided. You MUST incorporate this feedback into your revised plan:
-
-> ${meta.pending_feedback}
-
-Read the issue comments for the previous plan and all feedback, then produce an updated plan that addresses the feedback.
-
-`
-    : '';
 
   return `You are creating an implementation plan for a GitHub issue.
 
@@ -114,7 +157,9 @@ Read the issue comments for the previous plan and all feedback, then produce an 
 ${issue.issue_body || '(no body)'}
 - Type: ${classification.type}
 - Complexity: ${classification.complexity}
-${feedbackSection}
+
+**Check the issue comments for any prior plans or human feedback.** If there is feedback on a previous plan, you MUST incorporate it into your revised plan.
+
 ## Your Working Directory
 The repository is mounted at /workspace/extra/repo. Explore the codebase to understand the architecture before planning.
 
@@ -159,8 +204,9 @@ The repository is mounted at /workspace/extra/repo. Explore the codebase to unde
 - Do NOT start implementing — only plan`;
 }
 
-export function implementPrompt(issue: SdlcIssue): string {
+export function implementPrompt(issue: SdlcIssueView): string {
   const branchName = issue.branch_name || `sdlc/${issue.issue_number}-implementation`;
+  const priorWork = detectPriorWork(issue);
 
   return `You are implementing a GitHub issue based on an approved plan.
 
@@ -173,7 +219,7 @@ ${issue.issue_body || '(no body)'}
 
 ## Your Working Directory
 The repository is mounted at /workspace/extra/repo on branch \`${branchName}\`.
-
+${priorWork}
 ## Instructions
 
 1. **Read the approved plan and any feedback**: Check the issue comments for the implementation plan, and check if a PR already exists with review comments or feedback:
@@ -187,6 +233,14 @@ The repository is mounted at /workspace/extra/repo on branch \`${branchName}\`.
    \`\`\`
 
 2. **Implement the changes**: Follow the plan precisely. If there is existing PR feedback, address it. Write clean, well-tested code.
+
+   **Commit frequently as you go.** After each meaningful unit of progress (a new function, a module, a passing test), commit immediately:
+   \`\`\`bash
+   cd /workspace/extra/repo
+   git add -A
+   git commit -m "<short description of what this commit does>"
+   \`\`\`
+   This protects your work if the session is interrupted. Do not wait until the end to commit — small, incremental commits are expected.
 
 3. **Run the tests**. Identify the project's test command (e.g., \`go test ./...\`, \`npm test\`, \`make test\`) and run it:
    \`\`\`bash
@@ -254,20 +308,7 @@ The repository is mounted at /workspace/extra/repo on branch \`${branchName}\`.
 - Do NOT merge the PR`;
 }
 
-export function reviewPrompt(issue: SdlcIssue): string {
-  const meta = JSON.parse(issue.metadata || '{}');
-  const feedbackSection = meta.pending_feedback
-    ? `
-## Human Feedback (ACTION REQUIRED)
-The following feedback was left by a human reviewer. This is your **primary task** — address this feedback directly before doing anything else:
-
-> ${meta.pending_feedback}
-
-Read the PR comments for full context, then make the requested changes, commit, and push.
-
-`
-    : '';
-
+export function reviewPrompt(issue: SdlcIssueView): string {
   return `You are performing a comprehensive code review of a pull request.
 
 ## Issue Details
@@ -275,7 +316,9 @@ Read the PR comments for full context, then make the requested changes, commit, 
 - Issue #${issue.issue_number}: ${issue.issue_title}
 - PR #${issue.pr_number}
 - Branch: ${issue.branch_name}
-${feedbackSection}
+
+**Check the PR comments and review threads for any human feedback.** If there is feedback, address it as your primary task before proceeding with the review.
+
 ## Your Working Directory
 The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_name}\`.
 
@@ -390,7 +433,7 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
 - Do NOT approve or merge the PR`;
 }
 
-export function validatePrompt(issue: SdlcIssue): string {
+export function validatePrompt(issue: SdlcIssueView): string {
   return `You are validating that a pull request meets the original requirements.
 
 ## Issue Details
@@ -512,7 +555,7 @@ The repository is mounted at /workspace/extra/repo on branch \`${issue.branch_na
 - **NEVER close a PR** — if validation fails, write a failure result instead`;
 }
 
-export function mergePrompt(issue: SdlcIssue): string {
+export function mergePrompt(issue: SdlcIssueView): string {
   return `You are merging a validated pull request into main.
 
 ## Issue Details
@@ -598,7 +641,7 @@ gh pr comment ${issue.pr_number} --body "<explanation of what went wrong>"
 - If the merge command fails, check if the PR has branch protection rules that prevent squash merge and try \`--rebase\` instead`;
 }
 
-export function getPromptForStage(stage: string, issue: SdlcIssue): string {
+export function getPromptForStage(stage: string, issue: SdlcIssueView): string {
   switch (stage) {
     case 'triage':
       return triagePrompt(issue);

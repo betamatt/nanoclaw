@@ -50,6 +50,15 @@ const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
 /** Active containers tracked by session ID. */
 const activeContainers = new Map<string, { process: ChildProcess; containerName: string }>();
 
+/** Registered exit listeners — called with (agentGroupId, sessionId, exitCode). */
+type ContainerExitListener = (agentGroupId: string, sessionId: string, exitCode: number | null) => void;
+const exitListeners: ContainerExitListener[] = [];
+
+/** Register a callback that fires when any container exits. */
+export function onContainerExit(listener: ContainerExitListener): void {
+  exitListeners.push(listener);
+}
+
 /**
  * In-flight wake promises, keyed by session id. Deduplicates concurrent
  * `wakeContainer` calls while the first spawn is still mid-setup (async
@@ -168,6 +177,13 @@ async function spawnContainer(session: Session): Promise<void> {
     markContainerStopped(session.id);
     stopTypingRefresh(session.id);
     log.info('Container exited', { sessionId: session.id, code, containerName });
+    for (const listener of exitListeners) {
+      try {
+        listener(session.agent_group_id, session.id, code);
+      } catch (err) {
+        log.error('Container exit listener error', { err });
+      }
+    }
   });
 
   container.on('error', (err) => {

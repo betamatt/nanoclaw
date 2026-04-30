@@ -7,7 +7,7 @@ export type SdlcStage =
   | 'review'
   | 'review_flagged'
   | 'validate'
-  | 'awaiting_merge'
+  // awaiting_merge removed — validate → merge via sdlc:cmd:merge command
   | 'merge'
   | 'done'
   | 'failed';
@@ -15,6 +15,12 @@ export type SdlcStage =
 export type IssueType = 'bug' | 'feature' | 'chore' | 'security';
 export type Complexity = 'small' | 'med' | 'large';
 
+/** View assembled from GitHub data — no local DB. */
+export { type SdlcIssueView } from './github-state.js';
+
+/**
+ * @deprecated Use SdlcIssueView instead. Kept temporarily for migration.
+ */
 export interface SdlcIssue {
   id: number;
   repo: string;

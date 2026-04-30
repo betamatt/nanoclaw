@@ -8,16 +8,14 @@ import type { BlockerRef, SdlcIssue, SdlcStage } from './types.js';
 /** Map old DB stages to new label states. Null means no label (terminal/internal). */
 const STAGE_TO_LABEL: Partial<Record<SdlcStage, SdlcState>> = {
   triage: 'triage',
-  plan: 'triage', // plan is part of triage in the new model
+  plan: 'triage',
   blocked: 'blocked',
   awaiting_approval: 'plan-ready',
-  implement: 'plan-approved',
+  implement: 'implementing',
   review: 'review',
-  review_flagged: 'review', // review_flagged = review + feedback-required flag
+  review_flagged: 'review',
   validate: 'validate',
-  awaiting_merge: 'awaiting-merge',
-  merge: 'merge',
-  // done and failed have no label (closed or state+flag)
+  merge: 'merging',
 };
 
 let db: Database.Database;
